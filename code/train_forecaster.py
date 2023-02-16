@@ -1,8 +1,6 @@
 import numpy as np
 import torch
-import torch.nn as nn
 import matplotlib.pyplot as plt
-from torch.utils.data import TensorDataset, DataLoader
 from seedpy import fixedseed
 from os.path import exists
 from tsx.datasets.utils import windowing
@@ -16,12 +14,11 @@ def main():
         'n_epochs': 200,
         'learning_rate': 5e-4,
         'lagrange_multiplier': None,
-        'report_every': 1,
     }
     n_channels_enc_dec = (64, 32)
-    batch_size = 128
     device = 'cuda'
-    verbose = True
+    report_every = 1
+    verbose = False
     ###
 
     enc_path =  f'results/enc_dec_64.pth'
@@ -42,36 +39,26 @@ def main():
         with fixedseed(torch, seed=198471):
             enc_dec = EncoderDecoder(n_channels_enc_dec)
             #enc_dec.load_state_dict(torch.load(enc_path))
-            model = MultiForecaster(enc_dec, n_channels_enc_dec[-1], 5).to(device)
+            model = MultiForecaster(hyperparameters, enc_dec, n_channels_enc_dec[-1], 5).to(device)
 
         X = ds_experiments[idx]
-        test_size = 175
+        test_size = int(0.25 * len(X))
+
         mu, std = np.mean(X[:-test_size]), np.std(X[:-test_size])
         X = (X - mu) / std
 
-        X_train = X[:-test_size]
         X_test = X[-test_size:]
 
-
-        # Do windoing on train and val
-        X_train_w, y_train_w = windowing(X_train, lag=5)
-        X_test_w, _ = windowing(X_test, lag=5)
-
-        # Test to fit on train+val and only evaluate on test
-        ds_train = TensorDataset(torch.from_numpy(X_train_w).float().unsqueeze(1).to(device), torch.from_numpy(y_train_w).float().to(device))
-        dl_train = DataLoader(ds_train, batch_size=batch_size, shuffle=False)
-        dl_val = DataLoader(ds_train, batch_size=batch_size, shuffle=False)
-
-        log = model.fit(dl_train, dl_val, hyperparameters, verbose=verbose)
+        log = model.fit(X, report_every=report_every, verbose=verbose)
 
         # Test
         rmse = lambda a, b: mse(a, b, squared=False)
-        preds = model.predict(X_test_w)
+        preds = model.predict(X)
         print(rmse(preds, X_test))
 
         plt.figure()
         plt.plot(X, color='black', label='X')
-        plt.plot(np.arange(len(X_test)) + len(X_train), preds, color='red', label='End-to-end (single loss)')
+        plt.plot(np.arange(len(X_test)) + len(X) - test_size, preds, color='red', label='End-to-end (single loss)')
         plt.axvline(x=len(X)-test_size, color='red')
         plt.legend()
         plt.savefig('plots/e2e_test.png')

@@ -1,7 +1,9 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import pandas as pd
+from torch.utils.data import TensorDataset, DataLoader
+
+from tsx.datasets.utils import windowing
 
 class EncoderDecoder(nn.Module):
 
@@ -37,10 +39,14 @@ class EncoderDecoder(nn.Module):
 
 class MultiForecaster(nn.Module):
 
-    def __init__(self, encoder_decoder, n_encoder_filters, n_encoder_lag):
+    def __init__(self, hyperparameters, encoder_decoder, n_encoder_filters, n_encoder_lag):
         super().__init__()
         self.encoder_decoder = encoder_decoder
         self.forecasters = nn.ModuleList()
+        self.n_epochs = hyperparameters['n_epochs']
+        self.learning_rate = hyperparameters['learning_rate']
+        self.lagrange_multiplier = hyperparameters['lagrange_multiplier']
+        self.combined_loss_function = self.lagrange_multiplier is not None
 
         # Different output forecasters
 
@@ -80,46 +86,64 @@ class MultiForecaster(nn.Module):
         
         return None, predictions
 
+    def get_device(self):
+        return next(self.parameters()).device
+
     @torch.no_grad()
-    def predict(self, x, return_mean=True):
+    def predict(self, X, return_mean=True):
+        test_size = int(0.25 * len(X))
+        X_test = X[-test_size:]
+        x, _ = windowing(X_test, lag=5)
+
         if isinstance(x, np.ndarray):
-            x = torch.from_numpy(x).float().unsqueeze(1).to(next(self.parameters()).device)
+            x = torch.from_numpy(x).float().unsqueeze(1).to(self.get_device())
+
         out = self(x, use_decoder=False)[1].squeeze()
+
         if return_mean and len(out.shape) >= 2:
             out = out.mean(axis=-1)
+
         return np.concatenate([x[0][0].cpu().numpy(), out.cpu().numpy()])
 
-    def fit(self, dl_train, dl_val, hyperparameters, verbose=True):
+    def fit(self, X, batch_size=128, report_every=10, verbose=True):
 
-        def _compute_loss(_X, _y, combined_loss_function):
+        def _compute_loss(_X, _y):
 
             # Reshape y to accomodate for multiple outputs
             _y = _y.reshape(-1, 1).unsqueeze(1).repeat((1, len(self.forecasters), 1))
 
-            reconstructed, prediction = self(_X, use_decoder=combined_loss_function)
+            reconstructed, prediction = self(_X, use_decoder=self.combined_loss_function)
             pred_loss = prediction_loss_fn(prediction, _y)
-            if combined_loss_function:
+            if self.combined_loss_function:
                 rec_loss = reconstruction_loss_fn(reconstructed, _X)
                 # Combine the normal loss (pred_loss) with a multiplied version of the reconstruction error
-                L = pred_loss + lagrange_multiplier * rec_loss
+                L = pred_loss + self.lagrange_multiplier * rec_loss
             else:
                 L = pred_loss
             
             return L
 
-        n_epochs = hyperparameters['n_epochs']
-        learning_rate = hyperparameters['learning_rate']
-        lagrange_multiplier = hyperparameters['lagrange_multiplier']
-        report_every = hyperparameters['report_every']
-        combined_loss_function = lagrange_multiplier is not None
+        device = self.get_device()
+
+        # Take first 75% for training
+        test_size = int(0.25 * len(X))
+        X_train = X[:-test_size]
+
+        # Do windoing on train and val
+        X_train_w, y_train_w = windowing(X_train, lag=5)
+
+        # Test to fit on train+val and only evaluate on test
+        ds_train = TensorDataset(torch.from_numpy(X_train_w).float().unsqueeze(1).to(device), torch.from_numpy(y_train_w).float().to(device))
+        dl_train = DataLoader(ds_train, batch_size=batch_size, shuffle=False)
+        dl_val = DataLoader(ds_train, batch_size=batch_size, shuffle=False)
 
         log = []
 
-        optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         reconstruction_loss_fn = nn.MSELoss()
         prediction_loss_fn = nn.MSELoss()
 
-        for epoch in range(n_epochs):
+        for epoch in range(self.n_epochs):
             self.train()
             train_epoch_loss = []
             val_epoch_loss = []
@@ -127,7 +151,7 @@ class MultiForecaster(nn.Module):
             for _X, _y in dl_train:
                 optimizer.zero_grad()
 
-                L = _compute_loss(_X, _y, combined_loss_function)
+                L = _compute_loss(_X, _y)
                 L.backward()
                 optimizer.step()
 
@@ -138,7 +162,7 @@ class MultiForecaster(nn.Module):
                     for _X, _y in dl_val:
                         self.eval()
 
-                        L = _compute_loss(_X, _y, combined_loss_function)
+                        L = _compute_loss(_X, _y)
                         val_epoch_loss.append(L)
 
                     train_epoch_loss = torch.stack(train_epoch_loss).mean().cpu()

@@ -10,14 +10,17 @@ from seedpy import fixedseed
 
 class DeepARWrapper:
 
-    def __init__(self, n_epochs):
+    def __init__(self, n_epochs, lag):
         self.n_epochs = n_epochs
+        self.lag = lag
 
     # Use X[:-test_size] for training
     # X: np.ndarray
-    def fit(self, X, test_size):
+    def fit(self, X):
         df = pd.DataFrame(X, columns=['target'])
         df.index = pd.to_datetime(df.index, unit='D')
+
+        test_size = int(0.25 * len(X))
 
         dataset = PandasDataset(df, target="target")
 
@@ -28,11 +31,13 @@ class DeepARWrapper:
 
     # Use X[-test_size:] for prediction
     # X: np.ndarray
-    def predict(self, X, test_size, lag=5):
+    def predict(self, X):
         if not self.is_fitted:
             raise RuntimeError('Model is not fitted')
         df = pd.DataFrame(X, columns=['target'])
         df.index = pd.to_datetime(df.index, unit='D')
+
+        test_size = int(0.25 * len(X))
 
         dataset = PandasDataset(df, target="target")
 
@@ -44,7 +49,7 @@ class DeepARWrapper:
         forecasts = list(self.model.predict(test_data.input))
         predictions = np.array([x.samples.mean() for x in forecasts]).squeeze()
         # Fair comparison: Set first `lag` values to gt
-        predictions[:lag] = X[-test_size:-test_size+lag]
+        predictions[:self.lag] = X[-test_size:-test_size+self.lag]
         return predictions
 
 def main():
@@ -61,9 +66,9 @@ def main():
 
     # Train DeepAR
     with fixedseed(np, 0):
-        model = DeepARWrapper(n_epochs=n_epochs)
-        model.fit(X, test_size)
-        prediction = model.predict(X, test_size)
+        model = DeepARWrapper(n_epochs=n_epochs, lag=5)
+        model.fit(X)
+        prediction = model.predict(X)
     print(rmse(y_test, prediction))
 
     plt.figure()
