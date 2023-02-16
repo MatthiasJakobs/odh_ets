@@ -141,11 +141,11 @@ class MultiForecaster(nn.Module):
                         L = _compute_loss(_X, _y, combined_loss_function)
                         val_epoch_loss.append(L)
 
-                train_epoch_loss = torch.stack(train_epoch_loss).mean().cpu()
-                val_epoch_loss = torch.stack(val_epoch_loss).mean().cpu()
-                log.append([train_epoch_loss, val_epoch_loss])
-                if verbose:
-                    print(f'{epoch} {train_epoch_loss:.5f} | {val_epoch_loss:.5f}')
+                    train_epoch_loss = torch.stack(train_epoch_loss).mean().cpu()
+                    val_epoch_loss = torch.stack(val_epoch_loss).mean().cpu()
+                    log.append([epoch, train_epoch_loss, val_epoch_loss])
+                    if verbose:
+                        print(f'{epoch} {train_epoch_loss:.5f} | {val_epoch_loss:.5f}')
 
         log = np.vstack(log)
         return log

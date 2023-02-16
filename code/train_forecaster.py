@@ -13,15 +13,15 @@ from models import MultiForecaster, EncoderDecoder
 def main():
     ### Hyperparameters
     hyperparameters = {
-        'n_epochs': 150,
-        'learning_rate': 1e-3,
-        'lagrange_multiplier': 0.1,
+        'n_epochs': 200,
+        'learning_rate': 5e-4,
+        'lagrange_multiplier': None,
         'report_every': 1,
     }
     n_channels_enc_dec = (64, 32)
     batch_size = 128
     device = 'cuda'
-    verbose = False
+    verbose = True
     ###
 
     enc_path =  f'results/enc_dec_64.pth'
@@ -77,8 +77,8 @@ def main():
         plt.savefig('plots/e2e_test.png')
 
         plt.figure()
-        plt.plot(log[:, 0], color='red', label='train_loss')
-        plt.plot(log[:, 1], color='green', label='val_loss')
+        plt.plot(log[:, 0], log[:, 1], color='red', label='train_loss')
+        plt.plot(log[:, 0], log[:, 2], color='green', label='val_loss')
         plt.legend()
         plt.savefig('plots/e2e_train.png')
 
