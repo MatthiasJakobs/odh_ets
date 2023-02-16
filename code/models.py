@@ -108,10 +108,10 @@ class MultiForecaster(nn.Module):
             return L
 
         n_epochs = hyperparameters['n_epochs']
-        combined_loss_function = hyperparameters['combined_loss_function']
         learning_rate = hyperparameters['learning_rate']
         lagrange_multiplier = hyperparameters['lagrange_multiplier']
         report_every = hyperparameters['report_every']
+        combined_loss_function = lagrange_multiplier is not None
 
         log = []
 

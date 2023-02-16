@@ -14,7 +14,6 @@ def main():
     ### Hyperparameters
     hyperparameters = {
         'n_epochs': 150,
-        'combined_loss_function': False,
         'learning_rate': 1e-3,
         'lagrange_multiplier': 0.1,
         'report_every': 1,
@@ -57,11 +56,6 @@ def main():
         # Do windoing on train and val
         X_train_w, y_train_w = windowing(X_train, lag=5)
         X_test_w, _ = windowing(X_test, lag=5)
-
-        # ds_train = TensorDataset(torch.from_numpy(X_train_w).float().unsqueeze(1).to(device), torch.from_numpy(y_train_w).float().to(device))
-        # ds_val = TensorDataset(torch.from_numpy(X_val_w).float().unsqueeze(1).to(device), torch.from_numpy(y_val_w).float().to(device))
-        # dl_train = DataLoader(ds_train, batch_size=batch_size, shuffle=True)
-        # dl_val = DataLoader(ds_val, batch_size=batch_size, shuffle=False)
 
         # Test to fit on train+val and only evaluate on test
         ds_train = TensorDataset(torch.from_numpy(X_train_w).float().unsqueeze(1).to(device), torch.from_numpy(y_train_w).float().to(device))
