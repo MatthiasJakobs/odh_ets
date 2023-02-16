@@ -78,18 +78,35 @@ class MultiForecaster(nn.Module):
             reconstructed = self.encoder_decoder.decode(encoded)
             return reconstructed, predictions
         
-        return predictions
+        return None, predictions
 
     @torch.no_grad()
     def predict(self, x, return_mean=True):
         if isinstance(x, np.ndarray):
             x = torch.from_numpy(x).float().unsqueeze(1).to(next(self.parameters()).device)
-        out = self(x, use_decoder=False).squeeze()
+        out = self(x, use_decoder=False)[1].squeeze()
         if return_mean and len(out.shape) >= 2:
             out = out.mean(axis=-1)
         return np.concatenate([x[0][0].cpu().numpy(), out.cpu().numpy()])
 
     def fit(self, dl_train, dl_val, hyperparameters, verbose=True):
+
+        def _compute_loss(_X, _y, combined_loss_function):
+
+            # Reshape y to accomodate for multiple outputs
+            _y = _y.reshape(-1, 1).unsqueeze(1).repeat((1, len(self.forecasters), 1))
+
+            reconstructed, prediction = self(_X, use_decoder=combined_loss_function)
+            pred_loss = prediction_loss_fn(prediction, _y)
+            if combined_loss_function:
+                rec_loss = reconstruction_loss_fn(reconstructed, _X)
+                # Combine the normal loss (pred_loss) with a multiplied version of the reconstruction error
+                L = pred_loss + lagrange_multiplier * rec_loss
+            else:
+                L = pred_loss
+            
+            return L
+
         n_epochs = hyperparameters['n_epochs']
         combined_loss_function = hyperparameters['combined_loss_function']
         learning_rate = hyperparameters['learning_rate']
@@ -110,26 +127,7 @@ class MultiForecaster(nn.Module):
             for _X, _y in dl_train:
                 optimizer.zero_grad()
 
-                if combined_loss_function:
-                    reconstructed, prediction = self(_X, use_decoder=True)
-
-                    # Reshape y to accomodate for multiple outputs
-                    _y = _y.reshape(-1, 1).unsqueeze(1).repeat((1, prediction.shape[1], 1))
-
-                    rec_loss = reconstruction_loss_fn(reconstructed, _X)
-                    pred_loss = prediction_loss_fn(prediction, _y)
-
-                    # Combine the normal loss (pred_loss) with a multiplied version of the reconstruction error
-                    L = pred_loss + lagrange_multiplier * rec_loss
-                else:
-                    prediction = self(_X, use_decoder=False)
-
-                    # Reshape y to accomodate for multiple outputs
-                    _y = _y.reshape(-1, 1).unsqueeze(1).repeat((1, prediction.shape[1], 1))
-
-                    pred_loss = prediction_loss_fn(prediction, _y)
-                    L = pred_loss
-
+                L = _compute_loss(_X, _y, combined_loss_function)
                 L.backward()
                 optimizer.step()
 
@@ -140,26 +138,7 @@ class MultiForecaster(nn.Module):
                     for _X, _y in dl_val:
                         self.eval()
 
-                        if combined_loss_function:
-                            reconstructed, prediction = self(_X, use_decoder=True)
-
-                            # Reshape y to accomodate for multiple outputs
-                            _y = _y.reshape(-1, 1).unsqueeze(1).repeat((1, prediction.shape[1], 1))
-
-                            rec_loss = reconstruction_loss_fn(reconstructed, _X)
-                            pred_loss = prediction_loss_fn(prediction, _y)
-
-                            # Combine the normal loss (pred_loss) with a multiplied version of the reconstruction error
-                            L = pred_loss + lagrange_multiplier * rec_loss
-                        else:
-                            prediction = self(_X, use_decoder=False)
-
-                            # Reshape y to accomodate for multiple outputs
-                            _y = _y.reshape(-1, 1).unsqueeze(1).repeat((1, prediction.shape[1], 1))
-
-                            pred_loss = prediction_loss_fn(prediction, _y)
-                            L = pred_loss
-
+                        L = _compute_loss(_X, _y, combined_loss_function)
                         val_epoch_loss.append(L)
 
                 train_epoch_loss = torch.stack(train_epoch_loss).mean().cpu()
