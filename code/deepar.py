@@ -28,7 +28,7 @@ class DeepARWrapper:
 
     # Use X[-test_size:] for prediction
     # X: np.ndarray
-    def predict(self, X, test_size):
+    def predict(self, X, test_size, lag=5):
         if not self.is_fitted:
             raise RuntimeError('Model is not fitted')
         df = pd.DataFrame(X, columns=['target'])
@@ -43,6 +43,8 @@ class DeepARWrapper:
 
         forecasts = list(self.model.predict(test_data.input))
         predictions = np.array([x.samples.mean() for x in forecasts]).squeeze()
+        # Fair comparison: Set first `lag` values to gt
+        predictions[:lag] = X[-test_size:-test_size+lag]
         return predictions
 
 def main():
@@ -67,6 +69,7 @@ def main():
     plt.figure()
     plt.plot(X, color='black', label='X')
     plt.plot(np.arange(test_size)+(len(X) - test_size), prediction, color='red', label='DeepAR (default params)')
+    plt.axvline(x=len(X)-test_size, color='red')
     plt.tight_layout()
     plt.legend()
     plt.savefig('plots/deepar_test.png')
