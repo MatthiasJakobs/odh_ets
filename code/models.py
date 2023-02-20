@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 
 from tsx.datasets.utils import windowing
+from tsx.models import SoftDecisionTreeRegressor
 
 class EncoderDecoder(nn.Module):
 
@@ -12,13 +13,13 @@ class EncoderDecoder(nn.Module):
         self.encoder = nn.Sequential(
             nn.Conv1d(1, channels[0], 3, padding='same'),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),
             nn.Conv1d(channels[0], channels[1], 3, padding='same'),
         )
         self.decoder = nn.Sequential(
             nn.ConvTranspose1d(channels[1], channels[0], 3, padding=1),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),
             nn.ConvTranspose1d(channels[0], 1, 3, padding=1)
         )
 
@@ -56,7 +57,7 @@ class MultiForecaster(nn.Module):
                 nn.Flatten(),
                 nn.Linear(n_encoder_filters * n_encoder_lag, hidden_size),
                 nn.ReLU(),
-                nn.Dropout(0.2),
+                nn.Dropout(0.3),
                 nn.Linear(hidden_size, 1),
             )
             self.forecasters.append(m)
@@ -66,11 +67,26 @@ class MultiForecaster(nn.Module):
             m = nn.Sequential(
                 nn.Conv1d(n_encoder_filters, filters, 3, padding='same'),
                 nn.ReLU(),
-                nn.Dropout(0.2),
+                nn.Dropout(0.3),
                 nn.Flatten(),
                 nn.Linear(n_encoder_lag * filters, 1),
             )
             self.forecasters.append(m)
+
+        # SDTs
+        for depths in [5, 7]:
+            m = nn.Sequential(
+                nn.Flatten(),
+                SoftDecisionTreeRegressor(n_encoder_filters * n_encoder_lag, depth=depths),
+            )
+            self.forecasters.append(m)
+
+        # Linear
+        m = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(n_encoder_filters * n_encoder_lag, 1),
+        )
+        self.forecasters.append(m)
 
     def forward(self, x, use_decoder=True, train_encoder=True):
         if train_encoder:
@@ -102,8 +118,11 @@ class MultiForecaster(nn.Module):
 
         if return_mean and len(out.shape) >= 2:
             out = out.mean(axis=-1)
+            to_prepend = x[0][0]
+        else:
+            to_prepend = x[0][0].unsqueeze(1).repeat(1, len(self.forecasters))
 
-        return np.concatenate([x[0][0].cpu().numpy(), out.cpu().numpy()])
+        return np.concatenate([to_prepend.cpu().numpy(), out.cpu().numpy()])
 
     def fit(self, X, batch_size=128, report_every=10, verbose=True):
 
@@ -126,16 +145,26 @@ class MultiForecaster(nn.Module):
         device = self.get_device()
 
         # Take first 75% for training
+        train_size = int(0.5 * len(X))
+        val_size = int(0.25 * len(X))
         test_size = int(0.25 * len(X))
-        X_train = X[:-test_size]
+
+        X_train = X[:train_size]
+        X_val = X[train_size:-test_size]
+        X_test = X[-test_size:]
 
         # Do windoing on train and val
         X_train_w, y_train_w = windowing(X_train, lag=5)
+        X_val_w, y_val_w = windowing(X_val, lag=5)
 
         # Test to fit on train+val and only evaluate on test
         ds_train = TensorDataset(torch.from_numpy(X_train_w).float().unsqueeze(1).to(device), torch.from_numpy(y_train_w).float().to(device))
-        dl_train = DataLoader(ds_train, batch_size=batch_size, shuffle=False)
-        dl_val = DataLoader(ds_train, batch_size=batch_size, shuffle=False)
+        ds_val = TensorDataset(torch.from_numpy(X_val_w).float().unsqueeze(1).to(device), torch.from_numpy(y_val_w).float().to(device))
+        # dl_train = DataLoader(ds_train, batch_size=batch_size, shuffle=False)
+        # dl_val = DataLoader(ds_val, batch_size=batch_size, shuffle=False)
+        # TODO: Use val for hyperparameter tuning etc. For now, lets train on all data up until test
+        dl_train = DataLoader(ds_train + ds_val, batch_size=batch_size, shuffle=False)
+        dl_val = DataLoader(ds_train + ds_val, batch_size=batch_size, shuffle=False)
 
         log = []
 

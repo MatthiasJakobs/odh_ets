@@ -21,7 +21,6 @@ class DeepARWrapper:
         df.index = pd.to_datetime(df.index, unit='D')
 
         test_size = int(0.25 * len(X))
-
         dataset = PandasDataset(df, target="target")
 
         splitter = OffsetSplitter(offset=-test_size)

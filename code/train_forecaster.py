@@ -11,14 +11,14 @@ from models import MultiForecaster, EncoderDecoder
 def main():
     ### Hyperparameters
     hyperparameters = {
-        'n_epochs': 200,
-        'learning_rate': 5e-4,
+        'n_epochs': 500,
+        'learning_rate': 1e-4,
         'lagrange_multiplier': None,
     }
     n_channels_enc_dec = (64, 32)
     device = 'cuda'
-    report_every = 1
-    verbose = False
+    report_every = 10
+    verbose = True
     ###
 
     enc_path =  f'results/enc_dec_64.pth'
@@ -53,8 +53,27 @@ def main():
 
         # Test
         rmse = lambda a, b: mse(a, b, squared=False)
-        preds = model.predict(X)
+        all_preds = model.predict(X, return_mean=False)
+        preds = all_preds.mean(axis=-1)
         print(rmse(preds, X_test))
+
+        # Find out how the forecaster performances are distributed
+        model_was_best = np.zeros((len(model.forecasters)))
+        best_prediction = np.zeros((175))
+        for idx, ind_pred in enumerate(all_preds[5:]):
+            losses = (ind_pred - X_test[idx])**2
+            model_was_best[np.argmin(losses)] += 1
+            best_prediction[idx] = losses.min()
+
+        best_prediction[:5] = X_test[:5]
+
+        print('fcn1 fcn2 cnn1 cnn2 sdt1 sdt2 linear')
+        print(model_was_best.astype(np.uint8))
+        print('best possible selection loss', rmse(X_test, best_prediction))
+
+        forecaster_names = ['fcn1', 'fcn2', 'cnn1', 'cnn2', 'sdt1', 'sdt2', 'linear']
+        for (name, pred) in zip(forecaster_names, all_preds.T):
+            print(name, rmse(pred, X_test))
 
         plt.figure()
         plt.plot(X, color='black', label='X')
