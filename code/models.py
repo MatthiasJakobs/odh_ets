@@ -124,14 +124,14 @@ class MultiForecaster(nn.Module):
 
         return np.concatenate([to_prepend.cpu().numpy(), out.cpu().numpy()])
 
-    def fit(self, X, batch_size=128, report_every=10, verbose=True):
+    def fit(self, X, batch_size=128, report_every=10, train_encoder=True, verbose=True):
 
         def _compute_loss(_X, _y):
 
             # Reshape y to accomodate for multiple outputs
             _y = _y.reshape(-1, 1).unsqueeze(1).repeat((1, len(self.forecasters), 1))
 
-            reconstructed, prediction = self(_X, use_decoder=self.combined_loss_function)
+            reconstructed, prediction = self(_X, use_decoder=self.combined_loss_function, train_encoder=train_encoder)
             pred_loss = prediction_loss_fn(prediction, _y)
             if self.combined_loss_function:
                 rec_loss = reconstruction_loss_fn(reconstructed, _X)

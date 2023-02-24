@@ -174,3 +174,4 @@ poetry.toml
 .vscode
 *.pth
 *.npy
+*.pickle
