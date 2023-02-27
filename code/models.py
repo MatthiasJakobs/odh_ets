@@ -5,6 +5,9 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from tsx.datasets.utils import windowing
 from tsx.models import SoftDecisionTreeRegressor
+from tsx.metrics import mse
+from tsx.distances import dtw
+
 class EarlyStopping:
     def __init__(self, patience=7, verbose=False, delta=0):
         self.patience = patience
@@ -240,28 +243,95 @@ class MultiForecaster(nn.Module):
         log = np.vstack(log)
         return log
 
+    def _get_grad(self, X, output):
+        return torch.autograd.grad(outputs=output, inputs=X, grad_outputs=torch.ones_like(output))[0]
 
-    # Get the best possible prediction
-    # def get_best_loss(self, X, y, loss):
-    #     if isinstance(X, np.ndarray):
-    #         X = torch.from_numpy(X).float().unsqueeze(1)
+    # Batched Gradcam for speedup
+    def _gradcam(self, feats, preds):
+        gradients = self._get_grad(feats, preds)
+        feats = feats.detach()
 
-    #     with torch.no_grad():
-    #         self.eval()
-    #         preds = self(X, use_decoder=False).cpu().numpy()
-    
-    #     # Choose best prediction at each step
-    #     final_prediction = []
-    #     for t in range(len(X)):
-    #         preds_t = preds[t]
-    #         best_l = 1e10
-    #         best_model_idx = 0
-    #         for idx, pred in enumerate(preds_t):
-    #             l = loss(y[t].reshape(1), pred)
-    #             if l < best_l:
-    #                 best_l = l
-    #                 best_model_idx = idx
+        w = torch.mean(gradients, axis=-1)
 
-    #         final_prediction.append(preds_t[best_model_idx])
+        cam = torch.zeros_like(feats[:, 0])
+        for k in range(feats.shape[1]):
+            cam += w[:, k, None] * feats[:, k]
 
-    #     return loss(np.concatenate(final_prediction), y)
+        cam = torch.nn.functional.relu(cam).squeeze().numpy()
+        return cam
+
+    def build_rocs(self, X_val):
+
+        # For a 2d array, split every row at zeros and add them to a list if their size is longer than 2
+        def split_array_at_zeros(X, activations):
+            cam = [[] for _ in range(len(X))]
+            for row_idx, row in enumerate(activations):
+                zero_indices = np.where(row == 0)[0]
+                last_index = 0
+                for zi in zero_indices:
+                    sub = row[last_index:zi]
+                    if len(sub) > 2:
+                        cam[row_idx].append(X[row_idx, last_index:zi].squeeze())
+
+                    last_index = zi+1
+
+            return cam
+
+        # x = X_val
+        # y = X_val[:, 0, 0]
+        n_forecasters = len(self.forecasters)
+        x, y = windowing(X_val, lag=5, use_torch=True)
+        rocs = [ [] for _ in range(n_forecasters)]
+
+        x = x.unsqueeze(1)
+        # Gather loss values
+        batch_size = len(x)
+        losses = np.zeros((n_forecasters, batch_size))
+        all_cams = [ [] for _ in range(n_forecasters)]
+
+        for f_idx, fc in enumerate(self.forecasters):
+            feats = self.encoder_decoder.encode(x)
+            pred = fc(feats)
+            l = mse(pred, y)
+            cam = self._gradcam(feats, l)
+            losses[f_idx] = l.detach().numpy()
+
+            all_cams[f_idx].extend(split_array_at_zeros(x, cam))
+
+        # Find best forecaster for each datapoint
+        losses = losses.T
+        for datapoint_idx in range(batch_size):
+            best_forecaster_idx = np.argmin(losses[datapoint_idx])
+            rocs[best_forecaster_idx].append(all_cams[best_forecaster_idx][datapoint_idx])
+
+        # Compact rocs
+        final_rocs = [ [] for _ in range(n_forecasters)]
+        for f_idx, forecaster_rocs in enumerate(rocs):
+            for datapoint_rocs in forecaster_rocs:
+                final_rocs[f_idx].extend(datapoint_rocs)
+
+        return final_rocs
+
+    def run(self, X_test):
+        X, Y = windowing(X_test, lag=5, use_torch=True)
+        prediction = []
+        for x, _ in zip(X, Y):
+            # Find closest RoC
+            closest_forecaster = 0
+            smallest_distance = float('inf')
+            for f_idx in range(len(self.forecasters)):
+                for r in self.rocs[f_idx]:
+                    if r.shape[0] == 0:
+                        continue
+                    d = dtw(r, x)
+                    if d < smallest_distance:
+                        closest_forecaster = f_idx
+                        smallest_distance = d
+
+            with torch.no_grad():
+                feats = self.encoder_decoder.encode(x.unsqueeze(0).unsqueeze(0))
+                pred = self.forecasters[closest_forecaster](feats)
+                pred = pred.numpy().squeeze()
+                prediction.append(pred)
+
+        return np.hstack([X_test[:5].numpy(), np.stack(prediction)])

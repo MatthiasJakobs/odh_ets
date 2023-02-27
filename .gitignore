@@ -176,3 +176,5 @@ poetry.toml
 *.npy
 *.pickle
 *.tsf
+results/
+plots/*
