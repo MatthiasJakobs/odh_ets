@@ -175,3 +175,4 @@ poetry.toml
 *.pth
 *.npy
 *.pickle
+*.tsf

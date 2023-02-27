@@ -5,6 +5,33 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from tsx.datasets.utils import windowing
 from tsx.models import SoftDecisionTreeRegressor
+class EarlyStopping:
+    def __init__(self, patience=7, verbose=False, delta=0):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+        self.delta = delta
+        self.best_snapshot = None
+
+    def __call__(self, val_loss, model):
+
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.counter = 0
+            with torch.no_grad():
+                self.best_snapshot = model.state_dict().copy()
+
 
 class EncoderDecoder(nn.Module):
 
@@ -124,7 +151,7 @@ class MultiForecaster(nn.Module):
 
         return np.concatenate([to_prepend.cpu().numpy(), out.cpu().numpy()])
 
-    def fit(self, X, batch_size=128, report_every=10, train_encoder=True, verbose=True):
+    def fit(self, X, batch_size=128, report_every=10, train_encoder=True, verbose=True, early_stopping_patience=5):
 
         def _compute_loss(_X, _y):
 
@@ -172,7 +199,14 @@ class MultiForecaster(nn.Module):
         reconstruction_loss_fn = nn.MSELoss()
         prediction_loss_fn = nn.MSELoss()
 
+        ES = EarlyStopping(patience=early_stopping_patience)
+
         for epoch in range(self.n_epochs):
+            if ES.early_stop:
+                print(f'Stopping after {epoch} epochs')
+                self.load_state_dict(ES.best_snapshot)
+                break
+                    
             self.train()
             train_epoch_loss = []
             val_epoch_loss = []
@@ -197,6 +231,9 @@ class MultiForecaster(nn.Module):
                     train_epoch_loss = torch.stack(train_epoch_loss).mean().cpu()
                     val_epoch_loss = torch.stack(val_epoch_loss).mean().cpu()
                     log.append([epoch, train_epoch_loss, val_epoch_loss])
+
+                    ES(val_epoch_loss, self)
+
                     if verbose:
                         print(f'{epoch} {train_epoch_loss:.5f} | {val_epoch_loss:.5f}')
 

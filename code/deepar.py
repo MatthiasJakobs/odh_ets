@@ -7,12 +7,15 @@ from gluonts.dataset.split import OffsetSplitter
 from gluonts.mx import DeepAREstimator, Trainer
 from sklearn.metrics import mean_squared_error as mse
 from seedpy import fixedseed
+from pathlib import Path
+from os import makedirs
 
 class DeepARWrapper:
 
     def __init__(self, n_epochs, lag):
         self.n_epochs = n_epochs
         self.lag = lag
+        self.is_fitted = False
 
     # Use X[:-test_size] for training
     # X: np.ndarray
@@ -50,6 +53,14 @@ class DeepARWrapper:
         # Fair comparison: Set first `lag` values to gt
         predictions[:self.lag] = X[-test_size:-test_size+self.lag]
         return predictions
+
+    def save(self, path):
+        makedirs(path, exist_ok=True)
+        self.model.serialize(Path(path))
+
+    def load(self, path):
+        from gluonts.model.predictor import Predictor
+        self.model = Predictor.deserialize(Path(path))
 
 def main():
     # Setup
