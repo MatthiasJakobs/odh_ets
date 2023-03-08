@@ -11,7 +11,7 @@ from tsx.distances import dtw, euclidean
 from scipy.special import softmax
 from tsx.utils import to_random_state
 
-from roc_tools import find_closest_rocs, cluster_rocs, select_topm
+from roc_tools import find_closest_rocs, cluster_rocs, select_topm, drift_detected
 
 class EarlyStopping:
     def __init__(self, patience=7, verbose=False, delta=0):
@@ -434,25 +434,22 @@ class MultiForecaster(nn.Module):
             return selected_models, selected_rocs
         return models, rocs 
 
-    def predict_clustered(self, X_test, lag=5, weighting=False, random_state=None):
+    def predict_clustered(self, X_val, X_test, lag=5, weighting=False, random_state=None):
+
         rng = to_random_state(random_state)
-        X, Y = windowing(X_test, lag=lag, use_torch=True)
-        prediction = []
-        dist_fn = euclidean
 
-        # First iteration
-        x = torch.from_numpy(X_test[:lag]).float()
-        ensemble, _ = self.recluster_and_reselect(x)
-        print('ensemble', ensemble)
-        if len(ensemble) == 0:
-            # Sample random ensemble
-            ensemble = rng.choice(np.arange(len(self.forecasters)), size=3, replace=False)
-        #_, closest_rocs = find_closest_rocs(x, self.rocs)
-        #mu_d = np.min([euclidean(r, x) for r in closest_rocs])
+        @torch.no_grad()
+        def ensemble_predict(x, ensemble, w):
+            feats = self.encoder_decoder.encode(x.unsqueeze(0).unsqueeze(0))
 
-        # ensemble contains the models used for prediction
+            if weighting:
+                tmp =[(1-w[f_idx]) * self.forecasters[f_idx](feats) for f_idx in ensemble] 
+                pred = sum(tmp) / (1-w).sum()
+                return pred.item()
+            else:
+                return torch.cat([self.forecasters[f_idx](feats) for f_idx in ensemble]).mean().item()
 
-        for idx, (x, _) in enumerate(zip(X, Y)):
+        def calc_weights(x, dist_fn):
             dist_vec = np.zeros((len(self.forecasters)))
             for f_idx in range(len(self.forecasters)):
                 distances = [dist_fn(r, x) for r in self.rocs[f_idx] if r.shape[0] != 0]
@@ -462,22 +459,88 @@ class MultiForecaster(nn.Module):
                 else:
                     dist_vec[f_idx] = np.min(distances)
 
-            # Compute weighting of ensemble
-            w = dist_vec
-            with torch.no_grad():
-                feats = self.encoder_decoder.encode(x.unsqueeze(0).unsqueeze(0))
+            return dist_vec
 
-                if weighting:
-                    tmp =[(1-w[f_idx]) * self.forecasters[f_idx](feats) for f_idx in ensemble] 
-                    pred = sum(tmp) / (1-w).sum()
-                    prediction.append(pred.item())
-                else:
-                    prediction.append(torch.cat([self.forecasters[f_idx](feats) for f_idx in ensemble]).mean().item())
+        def get_topm(buffer, new):
+            if len(new) == 0:
+                if len(buffer) == 0:
+                    # Failsafe if the very first iteration results in a topm_models that is empty
+                    return rng.choice(len(self.forecasters), size=3, replace=False).tolist()
+                return buffer
+            return new
 
-        return np.hstack([X_test[:5], np.array(prediction)])
+        # hyperparameters
+        #nr_clusters_ensemble = 15
+        nr_clusters_ensemble = 5
+        dist_fn = euclidean
 
-            # Do ensemble preidction 
-            #predictions.append(self.ensemble_predict(x_unsqueezed, subset=topm_buffer))
+        predictions = []
+        mean_residuals = []
+        means = []
+        ensemble_residuals = []
+        topm_buffer = []
 
+        val_start = 0
+        val_stop = len(X_val) + lag
+        X_complete = torch.cat([X_val, X_test])
+        current_val = X_complete[val_start:val_stop]
 
+        # Remove all RoCs that have not length lag
+        self.rocs = self.restrict_rocs(self.rocs, lag)
 
+        means = [torch.mean(current_val).numpy()]
+
+        # First iteration 
+        x = X_test[:lag]
+        topm, _ = self.recluster_and_reselect(x, nr_clusters_ensemble, dist_fn=dist_fn)
+
+        # Compute min distance to x from the all models
+        _, closest_rocs = find_closest_rocs(x, self.rocs, dist_fn=dist_fn)
+        mu_d = np.min([euclidean(r, x) for r in closest_rocs])
+
+        # topm_buffer contains the models used for prediction
+        topm_buffer = get_topm(topm_buffer, topm)
+
+        # Compute weighting and ensemble predict
+        w = calc_weights(x, dist_fn)
+        predictions.append(ensemble_predict(x, topm_buffer, w))
+
+        # Subsequent iterations
+        for target_idx in range(lag+1, len(X_test)):
+            f_test = (target_idx-lag)
+            t_test = (target_idx)
+            x = X_test[f_test:t_test] 
+            val_start += 1
+            val_stop += 1
+            
+            current_val = X_complete[val_start:val_stop]
+            means.append(torch.mean(current_val).numpy())
+            mean_residuals.append(means[-1]-means[-2])
+
+            _, closest_rocs = find_closest_rocs(x, self.rocs, dist_fn=dist_fn)
+            ensemble_residuals.append(mu_d - np.min([dist_fn(r, x) for r in closest_rocs]))
+
+            # Drift detection
+            drift_type_one = drift_detected(mean_residuals, len(current_val), R=1.5)
+            drift_type_two = drift_detected(ensemble_residuals, len(current_val), R=100)
+
+            if drift_type_one:
+                val_start = val_stop - len(X_val) - lag
+                current_val = X_complete[val_start:val_stop]
+                mean_residuals = []
+                means = [torch.mean(current_val).numpy()]
+                self.rocs = self.build_rocs(current_val)
+                self.rocs = self.restrict_rocs(self.rocs, lag)
+
+            if drift_type_one or drift_type_two:
+                topm, _ = self.recluster_and_reselect(x, target_idx)
+                if drift_type_two:
+                    _, closest_rocs = find_closest_rocs(x, self.rocs)
+                    mu_d = np.min([dist_fn(r, x) for r in closest_rocs])
+                    ensemble_residuals = []
+                topm_buffer = get_topm(topm_buffer, topm)
+
+            w = calc_weights(x, dist_fn)
+            predictions.append(ensemble_predict(x, topm_buffer, w))
+
+        return np.concatenate([X_test[:lag].numpy(), np.array(predictions)])

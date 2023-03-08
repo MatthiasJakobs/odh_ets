@@ -28,6 +28,7 @@ def cluster_rocs(best_models, clostest_rocs, nr_desired_clusters, dist_fn=euclid
 
     # Cluster into the desired number of left-over models.
     tslearn_formatted = to_time_series_dataset(clostest_rocs)
+    # TODO: Metric
     km = TimeSeriesKMeans(n_clusters=nr_desired_clusters, metric='euclidean', random_state=rng)
     C = km.fit_predict(tslearn_formatted)
     C_count = np.bincount(C)
@@ -62,4 +63,14 @@ def select_topm(models, rocs, x, upper_bound, dist_fn=euclidean):
             topm_rocs.append(r)
 
     return topm_models, topm_rocs
+
+### Concept drift detection
+
+def drift_detected(residuals, L_val, R=1.5, delta=0.95): 
+    if len(residuals) <= 1:
+        return False
+
+    residuals = np.array(residuals)
+    epsilon = np.sqrt((R**2)*np.log(1/delta) / (2*L_val))
+    return np.abs(residuals[-1]) > np.abs(epsilon)
 

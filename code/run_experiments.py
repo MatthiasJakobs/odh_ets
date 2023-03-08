@@ -134,12 +134,14 @@ def main(override, dry_run):
             df['best_possible_selection'] = best_possible_predictions
 
             ### Clustering from 2022 paper
+            X_val, X_test = torch.from_numpy(X_val).float(), torch.from_numpy(X_test).float()
+
             model.rocs = model.restrict_rocs(rocs, exact_length=5)
-            clustering_prediction = model.predict_clustered(X_test, weighting=False, random_state=rng)
+            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng)
             df['e2e_clustering_average'] = clustering_prediction
 
             model.rocs = model.restrict_rocs(rocs, exact_length=5)
-            clustering_prediction = model.predict_clustered(X_test, weighting=True, random_state=rng)
+            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng)
             df['e2e_clustering_weighted'] = clustering_prediction
 
 
