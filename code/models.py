@@ -1,3 +1,4 @@
+from dataclasses import replace
 import numpy as np
 import torch
 import torch.nn as nn
@@ -6,8 +7,11 @@ from torch.utils.data import TensorDataset, DataLoader
 from tsx.datasets.utils import windowing
 from tsx.models import SoftDecisionTreeRegressor
 from tsx.metrics import mse
-from tsx.distances import dtw
+from tsx.distances import dtw, euclidean
 from scipy.special import softmax
+from tsx.utils import to_random_state
+
+from roc_tools import find_closest_rocs, cluster_rocs, select_topm
 
 class EarlyStopping:
     def __init__(self, patience=7, verbose=False, delta=0):
@@ -400,6 +404,82 @@ class MultiForecaster(nn.Module):
         best_possible_predictions[:5] = X_test[:5]
 
         return best_possible_predictions
+
+    
+
+    def recluster_and_reselect(self, x, nr_clusters_ensemble=5, skip_clustering=False, skip_topm=False, nr_select=None, dist_fn=euclidean):
+        # Find closest time series in each models RoC to x
+        models, rocs = find_closest_rocs(x, self.rocs)
+
+        # Cluster all RoCs into nr_clusters_ensemble clusters
+        if not skip_clustering:
+            models, rocs = cluster_rocs(models, rocs, nr_clusters_ensemble)
+
+        # Calculate upper and lower bound of delta (radius of circle)
+        numpy_regions = [r.numpy() for r in rocs]
+        lower_bound = 0.5 * np.sqrt(np.sum((numpy_regions - np.mean(numpy_regions, axis=0))**2) / nr_clusters_ensemble)
+        upper_bound = np.sqrt(np.sum((numpy_regions - x.numpy())**2) / nr_clusters_ensemble)
+        assert lower_bound <= upper_bound, "Lower bound bigger than upper bound"
+
+        # Select topm models according to upper bound
+        if not skip_topm:
+            selected_models, selected_rocs = select_topm(models, rocs, x, upper_bound)
+            return selected_models, selected_rocs
+
+        # Select fixed number
+        if nr_select is not None:
+            selected_indices = np.argsort([dist_fn(x.squeeze(), r.squeeze()) for r in rocs])[:self.nr_select]
+            selected_models = np.array(models)[selected_indices]
+            selected_rocs = [rocs[idx] for idx in selected_indices]
+            return selected_models, selected_rocs
+        return models, rocs 
+
+    def predict_clustered(self, X_test, lag=5, weighting=False, random_state=None):
+        rng = to_random_state(random_state)
+        X, Y = windowing(X_test, lag=lag, use_torch=True)
+        prediction = []
+        dist_fn = euclidean
+
+        # First iteration
+        x = torch.from_numpy(X_test[:lag]).float()
+        ensemble, _ = self.recluster_and_reselect(x)
+        print('ensemble', ensemble)
+        if len(ensemble) == 0:
+            # Sample random ensemble
+            ensemble = rng.choice(np.arange(len(self.forecasters)), size=3, replace=False)
+        #_, closest_rocs = find_closest_rocs(x, self.rocs)
+        #mu_d = np.min([euclidean(r, x) for r in closest_rocs])
+
+        # ensemble contains the models used for prediction
+
+        for idx, (x, _) in enumerate(zip(X, Y)):
+            if idx == 0:
+                continue
+
+            dist_vec = np.zeros((len(self.forecasters)))
+            for f_idx in range(len(self.forecasters)):
+                distances = [dist_fn(r, x) for r in self.rocs[f_idx] if r.shape[0] != 0]
+                if len(distances) == 0:
+                    #dist_vec[f_idx] = 0.9999
+                    dist_vec[f_idx] = 1000
+                else:
+                    dist_vec[f_idx] = np.min(distances)
+
+            # Compute weighting of ensemble
+            w = dist_vec
+            with torch.no_grad():
+                feats = self.encoder_decoder.encode(x.unsqueeze(0).unsqueeze(0))
+
+                if weighting:
+                    tmp =[(1-w[f_idx]) * self.forecasters[f_idx](feats) for f_idx in ensemble] 
+                    pred = sum(tmp) / (1-w).sum()
+                    prediction.append(pred.item())
+                else:
+                    prediction.append(torch.cat([self.forecasters[f_idx](feats) for f_idx in ensemble]).mean().item())
+
+
+            # Do ensemble preidction 
+            #predictions.append(self.ensemble_predict(x_unsqueezed, subset=topm_buffer))
 
 
 

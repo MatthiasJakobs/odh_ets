@@ -47,12 +47,7 @@ def create_cd_diagram(compositors_to_check, output_name, title, treatment_mappin
         maximize_outcome=False
     )
 
-    # Sort 
-    avg_ranks = diagram.average_ranks
-    sorted_indices = np.argsort(-avg_ranks)
-    treatment_names = [treatment_names[idx] for idx in sorted_indices]
-    avg_ranks = avg_ranks[sorted_indices]
-    diagram.to_file(output_name, title=title)
+    diagram.to_file(output_name)
 
 def main():
     print(results_path)
@@ -67,6 +62,8 @@ def main():
         'e2e_weighted_ensemble_smape_k=3',
         'e2e_weighted_ensemble_smape_k=5',
         'e2e_weighted_ensemble_smape_k=7',
+        'e2e_clustering_average',
+        'e2e_clustering_weighted',
         #'e2e-fcn1',
         # 'e2e-fcn2',
         # 'e2e-conv1',

@@ -57,6 +57,7 @@ def main(override, dry_run):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     batch_size = 128
     lag = 5
+    rng = np.random.RandomState(192857)
 
     for ds_name, ds_index in implemented_datasets:
         print(ds_name, ds_index)
@@ -88,38 +89,39 @@ def main(override, dry_run):
             # Train if model is not already trained
             with fixedseed(torch, seed=hyp['model_init_seed']):
                 _encdec = EncoderDecoder(hyp['n_channels']).to(device)
-                e2e_no_decoder = MultiForecaster(hyp, _encdec, hyp['n_channels'][-1], lag).to(device)
+                model = MultiForecaster(hyp, _encdec, hyp['n_channels'][-1], lag).to(device)
             
                 if not exists(savepath):
-                    e2e_no_decoder.fit(X, batch_size, train_encoder=True, verbose=False)
-                    torch.save(e2e_no_decoder.state_dict(), savepath)
+                    model.fit(X, batch_size, train_encoder=True, verbose=False)
+                    torch.save(model.state_dict(), savepath)
                 else:
-                    e2e_no_decoder.load_state_dict(torch.load(savepath))
+                    model.load_state_dict(torch.load(savepath))
 
-            e2e_no_decoder.eval()
+            model.eval()
 
-            e2e_no_decoder.to('cpu')
-            all_preds = e2e_no_decoder.predict(X, return_mean=False)
+            model.to('cpu')
+            all_preds = model.predict(X, return_mean=False)
             ensemble_preds = all_preds.mean(axis=-1)
 
             ### Run roc selection method
-            e2e_no_decoder.rocs = e2e_no_decoder.build_rocs(X_val)
-            roc_preds = e2e_no_decoder.run(X_test)
+            rocs = model.build_rocs(X_val)
+            model.rocs = rocs
+            roc_preds = model.run(X_test)
 
-            roc_distribution = np.array([len(roc) for roc in e2e_no_decoder.rocs])
+            roc_distribution = np.array([len(roc) for roc in model.rocs])
             print('roc_dist', roc_distribution)
             df['e2e_ensemble'] = ensemble_preds
             df['e2e_roc_selection'] = roc_preds
             
             ### Compute weighting based on distance
-            e2e_no_decoder.rocs = e2e_no_decoder.restrict_rocs(e2e_no_decoder.rocs, exact_length=5)
-            _, weighted_prediction1 = e2e_no_decoder.predict_weighted(X_test, k=1, dist_fn=smape)
+            model.rocs = model.restrict_rocs(model.rocs, exact_length=5)
+            _, weighted_prediction1 = model.predict_weighted(X_test, k=1, dist_fn=smape)
             df['e2e_weighted_ensemble_smape_k=1'] = weighted_prediction1
-            w, weighted_prediction2 = e2e_no_decoder.predict_weighted(X_test, k=3, dist_fn=smape)
+            w, weighted_prediction2 = model.predict_weighted(X_test, k=3, dist_fn=smape)
             df['e2e_weighted_ensemble_smape_k=3'] = weighted_prediction2
-            w, weighted_prediction3 = e2e_no_decoder.predict_weighted(X_test, k=5, dist_fn=smape)
+            w, weighted_prediction3 = model.predict_weighted(X_test, k=5, dist_fn=smape)
             df['e2e_weighted_ensemble_smape_k=5'] = weighted_prediction3
-            w, weighted_prediction4 = e2e_no_decoder.predict_weighted(X_test, k=7, dist_fn=smape)
+            w, weighted_prediction4 = model.predict_weighted(X_test, k=7, dist_fn=smape)
             df['e2e_weighted_ensemble_smape_k=7'] = weighted_prediction4
 
             ### Save the individual predictions as well
@@ -128,8 +130,18 @@ def main(override, dry_run):
                 df[single_name] = single_pred
 
             ### Get a baseline with the best prediction possible
-            best_possible_predictions = e2e_no_decoder.get_best_prediction(X, X_test)
+            best_possible_predictions = model.get_best_prediction(X, X_test)
             df['best_possible_selection'] = best_possible_predictions
+
+            ### Clustering from 2022 paper
+            model.rocs = model.restrict_rocs(rocs, exact_length=5)
+            clustering_prediction = model.predict_clustered(X_test, weighting=False, random_state=rng)
+            df['e2e_clustering_average'] = clustering_prediction
+
+            model.rocs = model.restrict_rocs(rocs, exact_length=5)
+            clustering_prediction = model.predict_clustered(X_test, weighting=True, random_state=rng)
+            df['e2e_clustering_weighted'] = clustering_prediction
+
 
         if override or 'deepar' not in df.columns:
 
