@@ -7,6 +7,7 @@ from tsx.datasets.utils import windowing
 from tsx.models import SoftDecisionTreeRegressor
 from tsx.metrics import mse
 from tsx.distances import dtw
+from scipy.special import softmax
 
 class EarlyStopping:
     def __init__(self, patience=7, verbose=False, delta=0):
@@ -82,22 +83,22 @@ class MultiForecaster(nn.Module):
         # Different output forecasters
 
         # Fully connceted
-        for hidden_size in [64, 32]:
+        for hidden_size in [32, 16]:
             m = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(n_encoder_filters * n_encoder_lag, hidden_size),
                 nn.ReLU(),
-                nn.Dropout(0.3),
+                #nn.Dropout(0.3),
                 nn.Linear(hidden_size, 1),
             )
             self.forecasters.append(m)
 
         # Conv
-        for filters in [64, 32]:
+        for filters in [32, 16]:
             m = nn.Sequential(
                 nn.Conv1d(n_encoder_filters, filters, 3, padding='same'),
                 nn.ReLU(),
-                nn.Dropout(0.3),
+                #nn.Dropout(0.3),
                 nn.Flatten(),
                 nn.Linear(n_encoder_lag * filters, 1),
             )
@@ -118,7 +119,7 @@ class MultiForecaster(nn.Module):
         )
         self.forecasters.append(m)
 
-    def forward(self, x, use_decoder=True, train_encoder=True):
+    def forward(self, x, use_decoder=True, train_encoder=True, return_feats=False):
         if train_encoder:
             encoded = self.encoder_decoder.encode(x)
         else:
@@ -130,7 +131,10 @@ class MultiForecaster(nn.Module):
             reconstructed = self.encoder_decoder.decode(encoded)
             return reconstructed, predictions
         
-        return None, predictions
+        if return_feats:
+            return encoded, predictions
+        else:
+            return None, predictions
 
     def get_device(self):
         return next(self.parameters()).device
@@ -138,13 +142,13 @@ class MultiForecaster(nn.Module):
     @torch.no_grad()
     def predict(self, X, return_mean=True):
         test_size = int(0.25 * len(X))
-        X_test = X[-test_size:]
+        X_test = X[-test_size:][:-1]
         x, _ = windowing(X_test, lag=5)
 
         if isinstance(x, np.ndarray):
             x = torch.from_numpy(x).float().unsqueeze(1).to(self.get_device())
 
-        out = self(x, use_decoder=False)[1].squeeze()
+        out = self(x, use_decoder=False, train_encoder=False)[1].squeeze()
 
         if return_mean and len(out.shape) >= 2:
             out = out.mean(axis=-1)
@@ -260,6 +264,16 @@ class MultiForecaster(nn.Module):
         cam = torch.nn.functional.relu(cam).squeeze().numpy()
         return cam
 
+    def restrict_rocs(self, rocs, exact_length):
+        new_rocs = [[] for _ in range(len(self.forecasters))]
+        for f_idx, forecaster_rocs in enumerate(rocs):
+            for r in forecaster_rocs:
+                r = r.squeeze()
+                if len(r) == exact_length:
+                    new_rocs[f_idx].append(r)
+
+        return new_rocs
+
     def build_rocs(self, X_val):
 
         # For a 2d array, split every row at zeros and add them to a list if their size is longer than 2
@@ -268,6 +282,14 @@ class MultiForecaster(nn.Module):
             for row_idx, row in enumerate(activations):
                 zero_indices = np.where(row == 0)[0]
                 last_index = 0
+
+                # Add entire datapoint if no zeros
+                if len(zero_indices) == 0:
+                    cam[row_idx].append(X[row_idx].squeeze())
+                    continue
+
+
+                # Only add subsequences if they are longer than 2
                 for zi in zero_indices:
                     sub = row[last_index:zi]
                     if len(sub) > 2:
@@ -277,8 +299,6 @@ class MultiForecaster(nn.Module):
 
             return cam
 
-        # x = X_val
-        # y = X_val[:, 0, 0]
         n_forecasters = len(self.forecasters)
         x, y = windowing(X_val, lag=5, use_torch=True)
         rocs = [ [] for _ in range(n_forecasters)]
@@ -289,19 +309,21 @@ class MultiForecaster(nn.Module):
         losses = np.zeros((n_forecasters, batch_size))
         all_cams = [ [] for _ in range(n_forecasters)]
 
+        feats = self.encoder_decoder.encode(x)
         for f_idx, fc in enumerate(self.forecasters):
-            feats = self.encoder_decoder.encode(x)
             pred = fc(feats)
-            l = mse(pred, y)
+            l = (pred - y)**2
             cam = self._gradcam(feats, l)
-            losses[f_idx] = l.detach().numpy()
+            losses[f_idx] = l.detach().numpy().squeeze()
 
             all_cams[f_idx].extend(split_array_at_zeros(x, cam))
 
         # Find best forecaster for each datapoint
         losses = losses.T
+        best_forecasters = []
         for datapoint_idx in range(batch_size):
             best_forecaster_idx = np.argmin(losses[datapoint_idx])
+            best_forecasters.append(best_forecaster_idx)
             rocs[best_forecaster_idx].append(all_cams[best_forecaster_idx][datapoint_idx])
 
         # Compact rocs
@@ -312,7 +334,7 @@ class MultiForecaster(nn.Module):
 
         return final_rocs
 
-    def run(self, X_test):
+    def run(self, X_test, dist_fn=dtw):
         X, Y = windowing(X_test, lag=5, use_torch=True)
         prediction = []
         for x, _ in zip(X, Y):
@@ -323,7 +345,7 @@ class MultiForecaster(nn.Module):
                 for r in self.rocs[f_idx]:
                     if r.shape[0] == 0:
                         continue
-                    d = dtw(r, x)
+                    d = dist_fn(r, x)
                     if d < smallest_distance:
                         closest_forecaster = f_idx
                         smallest_distance = d
@@ -334,4 +356,50 @@ class MultiForecaster(nn.Module):
                 pred = pred.numpy().squeeze()
                 prediction.append(pred)
 
-        return np.hstack([X_test[:5].numpy(), np.stack(prediction)])
+        return np.hstack([X_test[:5], np.stack(prediction)])
+
+    def predict_weighted(self, X_test, max_dist=0.999, k=1, dist_fn=None):
+        X, Y = windowing(X_test, lag=5, use_torch=True)
+        prediction = []
+        weights = np.zeros((X.shape[0], len(self.forecasters)))
+
+        for idx, (x, _) in enumerate(zip(X, Y)):
+            # Find closest RoC for each model
+            dist_vec = np.zeros((len(self.forecasters)))
+            for f_idx in range(len(self.forecasters)):
+                distances = [dist_fn(r, x) for r in self.rocs[f_idx] if r.shape[0] != 0]
+                if len(distances) == 0:
+                    dist_vec[f_idx] = max_dist
+                else:
+                    dist_vec[f_idx] = np.sort(distances)[:k].mean()
+
+            # Compute weighting of ensemble
+            w = dist_vec
+            weights[idx] = w.squeeze()
+
+            with torch.no_grad():
+                feats = self.encoder_decoder.encode(x.unsqueeze(0).unsqueeze(0))
+
+                tmp =[(1-w[f_idx]) * self.forecasters[f_idx](feats) for f_idx in range(len(self.forecasters))] 
+                pred = sum(tmp) / (1-w).sum()
+
+                prediction.append(pred.item())
+
+        return weights, np.hstack([X_test[:5], np.array(prediction)])
+
+    def get_best_prediction(self, X, X_test):
+        all_preds = self.predict(X, return_mean=False)
+        losses = (all_preds - X_test[:, None])**2
+        best_possible_predictions = []
+        for l_idx, l in enumerate(losses):
+            best_idx = np.argmin(l)
+            best_possible_predictions.append(all_preds[l_idx, best_idx].squeeze())
+        best_possible_predictions = np.array(best_possible_predictions)
+
+        # Set to gt here for fairer comparison
+        best_possible_predictions[:5] = X_test[:5]
+
+        return best_possible_predictions
+
+
+

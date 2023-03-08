@@ -34,12 +34,12 @@ class DeepARWrapper:
     # Use X[-test_size:] for prediction
     # X: np.ndarray
     def predict(self, X):
-        if not self.is_fitted:
-            raise RuntimeError('Model is not fitted')
+        # if not self.is_fitted:
+        #     raise RuntimeError('Model is not fitted')
         df = pd.DataFrame(X, columns=['target'])
         df.index = pd.to_datetime(df.index, unit='D')
 
-        test_size = int(0.25 * len(X))
+        test_size = int(0.25 * len(X))-1
 
         dataset = PandasDataset(df, target="target")
 

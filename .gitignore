@@ -178,3 +178,4 @@ poetry.toml
 *.tsf
 results/
 plots/*
+models/*
