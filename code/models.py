@@ -407,7 +407,7 @@ class MultiForecaster(nn.Module):
 
     
 
-    def recluster_and_reselect(self, x, nr_clusters_ensemble=5, skip_clustering=False, skip_topm=False, nr_select=None, dist_fn=euclidean):
+    def recluster_and_reselect(self, x, nr_clusters_ensemble=3, skip_clustering=False, skip_topm=False, nr_select=None, dist_fn=euclidean):
         # Find closest time series in each models RoC to x
         models, rocs = find_closest_rocs(x, self.rocs)
 
@@ -453,9 +453,6 @@ class MultiForecaster(nn.Module):
         # ensemble contains the models used for prediction
 
         for idx, (x, _) in enumerate(zip(X, Y)):
-            if idx == 0:
-                continue
-
             dist_vec = np.zeros((len(self.forecasters)))
             for f_idx in range(len(self.forecasters)):
                 distances = [dist_fn(r, x) for r in self.rocs[f_idx] if r.shape[0] != 0]
@@ -477,6 +474,7 @@ class MultiForecaster(nn.Module):
                 else:
                     prediction.append(torch.cat([self.forecasters[f_idx](feats) for f_idx in ensemble]).mean().item())
 
+        return np.hstack([X_test[:5], np.array(prediction)])
 
             # Do ensemble preidction 
             #predictions.append(self.ensemble_predict(x_unsqueezed, subset=topm_buffer))
