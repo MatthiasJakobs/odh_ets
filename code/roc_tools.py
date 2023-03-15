@@ -1,10 +1,19 @@
 import torch
 import numpy as np
 
-from tsx.distances import euclidean
+from tsx.distances import euclidean, dtw
 from tslearn.clustering import TimeSeriesKMeans
 from tslearn.utils import to_time_series_dataset
 from tsx.utils import to_random_state
+
+# Failsafe if the very first iteration results in a topm_models that is empty
+def get_topm(buffer, new, rng, n_forecasters):
+    if len(new) == 0:
+        if len(buffer) == 0:
+            return rng.choice(n_forecasters, size=3, replace=False).tolist()
+        return buffer
+    return new
+
 
 # For each entry in rocs, return the closest to x using dist_fn
 def find_closest_rocs(x, rocs, dist_fn=euclidean):
@@ -13,7 +22,7 @@ def find_closest_rocs(x, rocs, dist_fn=euclidean):
 
     for model in range(len(rocs)):
         rs = rocs[model]
-        distances = [dist_fn(x.squeeze(), r.squeeze()) for r in rs]
+        distances = [dist_fn(x.squeeze(), r.squeeze()) for r in rs if r.shape[0] != 0]
         if len(distances) != 0:
             closest_rocs.append(rs[np.argsort(distances)[0]])
             closest_models.append(model)
@@ -27,9 +36,16 @@ def cluster_rocs(best_models, clostest_rocs, nr_desired_clusters, dist_fn=euclid
     new_closest_rocs = []
 
     # Cluster into the desired number of left-over models.
+    clostest_rocs = [r for r in clostest_rocs if not r.shape[0] == 0]
+
     tslearn_formatted = to_time_series_dataset(clostest_rocs)
-    # TODO: Metric
-    km = TimeSeriesKMeans(n_clusters=nr_desired_clusters, metric='euclidean', random_state=rng)
+    if dist_fn == euclidean:
+        km = TimeSeriesKMeans(n_clusters=nr_desired_clusters, metric='euclidean', random_state=rng)
+    elif dist_fn == dtw:
+        km = TimeSeriesKMeans(n_clusters=nr_desired_clusters, metric='dtw', random_state=rng)
+    else:
+        raise NotImplementedError('Unknown distance function', dist_fn)
+
     C = km.fit_predict(tslearn_formatted)
     C_count = np.bincount(C)
 

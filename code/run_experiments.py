@@ -11,11 +11,12 @@ from seedpy import fixedseed
 from sklearn.metrics import mean_squared_error as mse
 from os.path import exists
 from scipy.stats import entropy
-from tsx.distances import euclidean
+from tsx.distances import euclidean, dtw
 
 from models import EncoderDecoder, MultiForecaster
 from deepar import DeepARWrapper
 from datasets.dataloading import get_all_datasets, load_dataset
+from utils import smape
 
 hyperparameters = {
     'e2e_no_decoder': {
@@ -37,15 +38,6 @@ def mean_entropy(weights):
     b = weights.shape[1]
     entr = entropy(weights, base=b, axis=1)
     return np.mean(entr)
-
-def smape(a, b):
-    assert len(a.shape) <= 1
-    assert len(b.shape) <= 1
-
-    num = np.abs(a - b)
-    denom = np.abs(a) + np.abs(b)
-
-    return (num / denom).mean()
 
 
 def main(override, dry_run):
@@ -136,13 +128,30 @@ def main(override, dry_run):
             ### Clustering from 2022 paper
             X_val, X_test = torch.from_numpy(X_val).float(), torch.from_numpy(X_test).float()
 
-            model.rocs = model.restrict_rocs(rocs, exact_length=5)
-            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng)
+            print([len(r) for r in rocs])
+
+            model.rocs = rocs
+            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng, dist_fn=euclidean)
             df['e2e_clustering_average'] = clustering_prediction
 
-            model.rocs = model.restrict_rocs(rocs, exact_length=5)
-            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng)
+            print('---')
+            print([len(r) for r in rocs])
+
+            model.rocs = rocs
+            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng, dist_fn=euclidean)
             df['e2e_clustering_weighted'] = clustering_prediction
+
+            print('---')
+            model.rocs = rocs
+            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng, dist_fn=dtw)
+            df['e2e_clustering_average_dtw'] = clustering_prediction
+
+            print('---')
+            print([len(r) for r in rocs])
+
+            model.rocs = rocs
+            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng, dist_fn=dtw)
+            df['e2e_clustering_weighted_dtw'] = clustering_prediction
 
 
         if override or 'deepar' not in df.columns:

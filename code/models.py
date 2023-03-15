@@ -11,7 +11,8 @@ from tsx.distances import dtw, euclidean
 from scipy.special import softmax
 from tsx.utils import to_random_state
 
-from roc_tools import find_closest_rocs, cluster_rocs, select_topm, drift_detected
+from roc_tools import find_closest_rocs, cluster_rocs, select_topm, drift_detected, get_topm
+from utils import smape
 
 class EarlyStopping:
     def __init__(self, patience=7, verbose=False, delta=0):
@@ -361,7 +362,7 @@ class MultiForecaster(nn.Module):
         return np.hstack([X_test[:5], np.stack(prediction)])
 
     def predict_weighted(self, X_test, max_dist=0.999, k=1, dist_fn=None):
-        X, Y = windowing(X_test, lag=5, use_torch=True)
+        X, _ = windowing(X_test, lag=5, use_torch=True)
         prediction = []
         weights = np.zeros((X.shape[0], len(self.forecasters)))
 
@@ -403,15 +404,13 @@ class MultiForecaster(nn.Module):
 
         return best_possible_predictions
 
-    
-
     def recluster_and_reselect(self, x, nr_clusters_ensemble=3, skip_clustering=False, skip_topm=False, nr_select=None, dist_fn=euclidean):
         # Find closest time series in each models RoC to x
-        models, rocs = find_closest_rocs(x, self.rocs)
+        models, rocs = find_closest_rocs(x, self.rocs, dist_fn=dist_fn)
 
         # Cluster all RoCs into nr_clusters_ensemble clusters
         if not skip_clustering:
-            models, rocs = cluster_rocs(models, rocs, nr_clusters_ensemble)
+            models, rocs = cluster_rocs(models, rocs, nr_clusters_ensemble, dist_fn=dist_fn)
 
         # Calculate upper and lower bound of delta (radius of circle)
         numpy_regions = [r.numpy() for r in rocs]
@@ -423,7 +422,7 @@ class MultiForecaster(nn.Module):
 
         # Select topm models according to upper bound
         if not skip_topm:
-            selected_models, selected_rocs = select_topm(models, rocs, x, upper_bound)
+            selected_models, selected_rocs = select_topm(models, rocs, x, upper_bound, dist_fn=dist_fn)
             return selected_models, selected_rocs
 
         # Select fixed number
@@ -434,7 +433,7 @@ class MultiForecaster(nn.Module):
             return selected_models, selected_rocs
         return models, rocs 
 
-    def predict_clustered(self, X_val, X_test, lag=5, weighting=False, random_state=None):
+    def predict_clustered(self, X_val, X_test, lag=5, weighting=False, random_state=None, dist_fn=euclidean):
 
         rng = to_random_state(random_state)
 
@@ -444,36 +443,32 @@ class MultiForecaster(nn.Module):
 
             if weighting:
                 models = [self.forecasters[idx] for idx in ensemble]
-                softmax_weights = softmax([w[idx] for idx in ensemble])
+                softmax_weights = softmax([-w[idx] for idx in ensemble])
                 pred = sum([softmax_weights[idx] * models[idx](feats) for idx in range(len(ensemble))])
                 return pred.item()
             else:
                 return torch.cat([self.forecasters[f_idx](feats) for f_idx in ensemble]).mean().item()
 
         def calc_weights(x, dist_fn):
+            if dist_fn == euclidean:
+                max_value = 100
+            elif dist_fn  == dtw:
+                max_value = 100
+            elif dist_fn == smape:
+                max_value = 0.999
+
             dist_vec = np.zeros((len(self.forecasters)))
             for f_idx in range(len(self.forecasters)):
                 distances = [dist_fn(r, x) for r in self.rocs[f_idx] if r.shape[0] != 0]
                 if len(distances) == 0:
-                    #dist_vec[f_idx] = 0.9999
-                    dist_vec[f_idx] = 1000
+                    dist_vec[f_idx] = max_value
                 else:
                     dist_vec[f_idx] = np.min(distances)
 
             return dist_vec
 
-        def get_topm(buffer, new):
-            if len(new) == 0:
-                if len(buffer) == 0:
-                    # Failsafe if the very first iteration results in a topm_models that is empty
-                    return rng.choice(len(self.forecasters), size=3, replace=False).tolist()
-                return buffer
-            return new
-
         # hyperparameters
-        #nr_clusters_ensemble = 15
         nr_clusters_ensemble = 10
-        dist_fn = euclidean
 
         predictions = []
         mean_residuals = []
@@ -487,7 +482,8 @@ class MultiForecaster(nn.Module):
         current_val = X_complete[val_start:val_stop]
 
         # Remove all RoCs that have not length lag
-        self.rocs = self.restrict_rocs(self.rocs, lag)
+        if dist_fn == euclidean:
+            self.rocs = self.restrict_rocs(self.rocs, lag)
 
         means = [torch.mean(current_val).numpy()]
 
@@ -497,10 +493,10 @@ class MultiForecaster(nn.Module):
 
         # Compute min distance to x from the all models
         _, closest_rocs = find_closest_rocs(x, self.rocs, dist_fn=dist_fn)
-        mu_d = np.min([euclidean(r, x) for r in closest_rocs])
+        mu_d = np.min([dist_fn(r, x) for r in closest_rocs if r.shape[0] != 0])
 
         # topm_buffer contains the models used for prediction
-        topm_buffer = get_topm(topm_buffer, topm)
+        topm_buffer = get_topm(topm_buffer, topm, rng, len(self.forecasters))
 
         # Compute weighting and ensemble predict
         w = calc_weights(x, dist_fn)
@@ -519,7 +515,7 @@ class MultiForecaster(nn.Module):
             mean_residuals.append(means[-1]-means[-2])
 
             _, closest_rocs = find_closest_rocs(x, self.rocs, dist_fn=dist_fn)
-            ensemble_residuals.append(mu_d - np.min([dist_fn(r, x) for r in closest_rocs]))
+            ensemble_residuals.append(mu_d - np.min([dist_fn(r, x) for r in closest_rocs if r.shape[0] != 0]))
 
             # Drift detection
             drift_type_one = drift_detected(mean_residuals, len(current_val), R=1.5)
@@ -531,15 +527,16 @@ class MultiForecaster(nn.Module):
                 mean_residuals = []
                 means = [torch.mean(current_val).numpy()]
                 self.rocs = self.build_rocs(current_val)
-                self.rocs = self.restrict_rocs(self.rocs, lag)
+                if dist_fn == euclidean:
+                    self.rocs = self.restrict_rocs(self.rocs, lag)
 
             if drift_type_one or drift_type_two:
                 topm, _ = self.recluster_and_reselect(x, target_idx)
                 if drift_type_two:
                     _, closest_rocs = find_closest_rocs(x, self.rocs)
-                    mu_d = np.min([dist_fn(r, x) for r in closest_rocs])
+                    mu_d = np.min([dist_fn(r, x) for r in closest_rocs if r.shape[0] != 0])
                     ensemble_residuals = []
-                topm_buffer = get_topm(topm_buffer, topm)
+                topm_buffer = get_topm(topm_buffer, topm, rng, len(self.forecasters))
 
             w = calc_weights(x, dist_fn)
             predictions.append(ensemble_predict(x, topm_buffer, w))
