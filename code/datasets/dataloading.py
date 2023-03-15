@@ -6,6 +6,8 @@ from datasets.monash_forecasting import _get_ds_names as get_monash_names
 from datasets.legacy_datasets import load_dataset as load_legacy
 from datasets.legacy_datasets import all_legacy_names as get_legacy_names
 
+limit_data = 15
+
 def get_monash_configs():
     idx_mapping = {
         'electricity_hourly': [0, 1, 2, 5, 6, 7, 9, 10, 12, 13, 14],
@@ -38,3 +40,12 @@ def load_dataset(ds_name, ds_index):
     if ds_name in monash_names:
         return load_monash(ds_name, ds_index)
     raise Exception("Unknown ds name", ds_name)
+
+# Get all (or a random subset) of implemented datasets
+def get_all_datasets():
+    if limit_data is not None:
+        rng = np.random.RandomState(958717)
+        random_indices = rng.choice(np.arange(len(implemented_datasets)), size=limit_data, replace=False)
+        return [implemented_datasets[idx] for idx in random_indices]
+
+    return implemented_datasets

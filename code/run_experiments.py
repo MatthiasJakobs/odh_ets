@@ -15,7 +15,7 @@ from tsx.distances import euclidean
 
 from models import EncoderDecoder, MultiForecaster
 from deepar import DeepARWrapper
-from datasets.dataloading import implemented_datasets, load_dataset
+from datasets.dataloading import get_all_datasets, load_dataset
 
 hyperparameters = {
     'e2e_no_decoder': {
@@ -59,7 +59,7 @@ def main(override, dry_run):
     lag = 5
     rng = np.random.RandomState(192857)
 
-    for ds_name, ds_index in implemented_datasets:
+    for ds_name, ds_index in get_all_datasets():
         print(ds_name, ds_index)
         X = load_dataset(ds_name, ds_index)
 
@@ -82,7 +82,7 @@ def main(override, dry_run):
         df = pd.read_csv(result_path, header=0, index_col=0)
 
         # Skip if experiment is already done
-        if override or 'e2e_ensemble' not in df.columns or 'e2e_roc_selection' not in df.columns or 'e2e_weighted_ensemble' not in df.columns:
+        if override or ('e2e_ensemble' not in df.columns) or ('e2e_roc_selection' not in df.columns) or ('e2e_weighted_ensemble' not in df.columns):
             savepath = f'models/{ds_name}_#{ds_index}_e2e.pth'
 
             hyp = hyperparameters['e2e_no_decoder']
@@ -100,38 +100,38 @@ def main(override, dry_run):
             model.eval()
 
             model.to('cpu')
-            all_preds = model.predict(X, return_mean=False)
-            ensemble_preds = all_preds.mean(axis=-1)
+            # all_preds = model.predict(X, return_mean=False)
+            # ensemble_preds = all_preds.mean(axis=-1)
 
             ### Run roc selection method
             rocs = model.build_rocs(X_val)
-            model.rocs = rocs
-            roc_preds = model.run(X_test)
+            # model.rocs = rocs
+            # roc_preds = model.run(X_test)
 
-            roc_distribution = np.array([len(roc) for roc in model.rocs])
-            print('roc_dist', roc_distribution)
-            df['e2e_ensemble'] = ensemble_preds
-            df['e2e_roc_selection'] = roc_preds
+            # roc_distribution = np.array([len(roc) for roc in model.rocs])
+            # print('roc_dist', roc_distribution)
+            # df['e2e_ensemble'] = ensemble_preds
+            # df['e2e_roc_selection'] = roc_preds
             
             ### Compute weighting based on distance
-            model.rocs = model.restrict_rocs(model.rocs, exact_length=5)
-            _, weighted_prediction1 = model.predict_weighted(X_test, k=1, dist_fn=smape)
-            df['e2e_weighted_ensemble_smape_k=1'] = weighted_prediction1
-            w, weighted_prediction2 = model.predict_weighted(X_test, k=3, dist_fn=smape)
-            df['e2e_weighted_ensemble_smape_k=3'] = weighted_prediction2
-            w, weighted_prediction3 = model.predict_weighted(X_test, k=5, dist_fn=smape)
-            df['e2e_weighted_ensemble_smape_k=5'] = weighted_prediction3
-            w, weighted_prediction4 = model.predict_weighted(X_test, k=7, dist_fn=smape)
-            df['e2e_weighted_ensemble_smape_k=7'] = weighted_prediction4
+            # model.rocs = model.restrict_rocs(model.rocs, exact_length=5)
+            # _, weighted_prediction1 = model.predict_weighted(X_test, k=1, dist_fn=smape)
+            # df['e2e_weighted_ensemble_smape_k=1'] = weighted_prediction1
+            # w, weighted_prediction2 = model.predict_weighted(X_test, k=3, dist_fn=smape)
+            # df['e2e_weighted_ensemble_smape_k=3'] = weighted_prediction2
+            # w, weighted_prediction3 = model.predict_weighted(X_test, k=5, dist_fn=smape)
+            # df['e2e_weighted_ensemble_smape_k=5'] = weighted_prediction3
+            # w, weighted_prediction4 = model.predict_weighted(X_test, k=7, dist_fn=smape)
+            # df['e2e_weighted_ensemble_smape_k=7'] = weighted_prediction4
 
             ### Save the individual predictions as well
-            single_names = ['e2e-fcn1', 'e2e-fcn2', 'e2e-conv1', 'e2e-conv2', 'e2e-sdt1', 'e2e-sdt2', 'e2e-lin']
-            for single_name, single_pred in zip(single_names, all_preds.T):
-                df[single_name] = single_pred
+            # single_names = ['e2e-fcn1', 'e2e-fcn2', 'e2e-conv1', 'e2e-conv2', 'e2e-sdt1', 'e2e-sdt2', 'e2e-lin']
+            # for single_name, single_pred in zip(single_names, all_preds.T):
+            #     df[single_name] = single_pred
 
             ### Get a baseline with the best prediction possible
-            best_possible_predictions = model.get_best_prediction(X, X_test)
-            df['best_possible_selection'] = best_possible_predictions
+            # best_possible_predictions = model.get_best_prediction(X, X_test)
+            # df['best_possible_selection'] = best_possible_predictions
 
             ### Clustering from 2022 paper
             X_val, X_test = torch.from_numpy(X_val).float(), torch.from_numpy(X_test).float()
@@ -163,7 +163,6 @@ def main(override, dry_run):
             df['deepar'] = preds
     
         if not dry_run:
-            print(df.shape)
             df.to_csv(result_path)
 
 if __name__ == '__main__':

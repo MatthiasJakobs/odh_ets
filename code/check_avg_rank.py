@@ -3,7 +3,7 @@ import pandas as pd
 from os.path import exists, join
 from os import makedirs
 
-from datasets.dataloading import implemented_datasets
+from datasets.dataloading import get_all_datasets
 from critdd import Diagram
 from sklearn.metrics import mean_squared_error as mse
 
@@ -14,11 +14,14 @@ results_path = 'results'
 def create_cd_diagram(compositors_to_check, output_name, title, treatment_mapping=None):
 
     used_datasets = 0
-    total_datasets = len(implemented_datasets)
+    all_datasets = get_all_datasets()
+    total_datasets = len(all_datasets)
 
     losses = []
 
-    for ds_name, ds_index in implemented_datasets:
+    for ds_name, ds_index in all_datasets:
+        if ds_name == 'EOGHorizontalSignal' and ds_index == 0:
+            continue
         ds_path = join(results_path, f'test_{ds_name}_#{str(ds_index)}.csv')
         if exists(ds_path):
             df = pd.read_csv(ds_path, header=0, index_col=0)
@@ -64,7 +67,7 @@ def main():
         'e2e_weighted_ensemble_smape_k=7',
         'e2e_clustering_average',
         'e2e_clustering_weighted',
-        #'e2e-fcn1',
+        # 'e2e-fcn1',
         # 'e2e-fcn2',
         # 'e2e-conv1',
         # 'e2e-conv2',
