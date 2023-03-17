@@ -10,7 +10,6 @@ from sklearn.metrics import mean_squared_error as mse
 #results_path = '../ecml_23_sax/results/main_experiments_new/'
 results_path = 'results' 
 
-
 def create_cd_diagram(compositors_to_check, output_name, title, treatment_mapping=None):
 
     used_datasets = 0
@@ -61,12 +60,12 @@ def main():
         'deepar',
         'e2e_ensemble',
         'e2e_roc_selection',
-        'e2e_weighted_ensemble_smape_k=1',
-        'e2e_weighted_ensemble_smape_k=3',
-        'e2e_weighted_ensemble_smape_k=5',
-        'e2e_weighted_ensemble_smape_k=7',
-        'e2e_clustering_average',
-        'e2e_clustering_weighted',
+        # 'e2e_weighted_ensemble_smape_k=1',
+        # 'e2e_weighted_ensemble_smape_k=3',
+        # 'e2e_weighted_ensemble_smape_k=5',
+        # 'e2e_weighted_ensemble_smape_k=7',
+        # 'e2e_clustering_average',
+        # 'e2e_clustering_weighted',
         # 'e2e-fcn1',
         # 'e2e-fcn2',
         # 'e2e-conv1',
@@ -74,9 +73,17 @@ def main():
         # 'e2e-sdt1',
         # 'e2e-sdt2',
         # 'e2e-lin',
-        'best_possible_selection'
+        'weighted_ensemble_euclidean',
+        'weighted_ensemble_dtw',
+        'weighted_ensemble_smape',
+        # 'weighted_ensemble_euclidean_onlybest',
+        # 'weighted_ensemble_dtw_onlybest',
+        # 'weighted_ensemble_smape_onlybest',
+        'best_possible_selection',
+        'OEP-ROC-15'
     ]
     treatment_mapping = {
+        'OEP-ROC-15': 'OEP-ROC',
         'deepar': 'DeepAR',
         'e2e_ensemble': 'e2e-ensemble',
         'e2e_roc_selection': 'e2e-roc-selection',

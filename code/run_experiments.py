@@ -96,12 +96,12 @@ def main(override, dry_run):
             # ensemble_preds = all_preds.mean(axis=-1)
 
             ### Run roc selection method
-            rocs = model.build_rocs(X_val)
+            rocs = model.build_rocs(X_val, only_best=False)
+            roc_distribution = np.array([len(roc) for roc in rocs])
+            print('roc_dist', roc_distribution)
             # model.rocs = rocs
             # roc_preds = model.run(X_test)
 
-            # roc_distribution = np.array([len(roc) for roc in model.rocs])
-            # print('roc_dist', roc_distribution)
             # df['e2e_ensemble'] = ensemble_preds
             # df['e2e_roc_selection'] = roc_preds
             
@@ -122,36 +122,65 @@ def main(override, dry_run):
             #     df[single_name] = single_pred
 
             ### Get a baseline with the best prediction possible
-            # best_possible_predictions = model.get_best_prediction(X, X_test)
-            # df['best_possible_selection'] = best_possible_predictions
+            best_possible_predictions = model.get_best_prediction(X, X_test)
+            df['best_possible_selection'] = best_possible_predictions
+
+            # Weighted prediction
+            model.rocs = model.restrict_rocs(rocs, 5)
+            _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=euclidean, max_dist=100)
+            df['weighted_ensemble_euclidean'] = weighted_prediction
+
+            model.rocs = rocs
+            _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=dtw, max_dist=100)
+            df['weighted_ensemble_dtw'] = weighted_prediction
+
+            model.rocs = rocs
+            _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=smape, max_dist=0.999)
+            df['weighted_ensemble_smape'] = weighted_prediction
+
+            # Weighted prediction, only_best
+            rocs = model.build_rocs(X_val, only_best=True)
+            roc_distribution = np.array([len(roc) for roc in rocs])
+            print('roc_dist_onlybest', roc_distribution)
+            model.rocs = model.restrict_rocs(rocs, 5)
+            _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=euclidean, max_dist=100)
+            df['weighted_ensemble_euclidean_onlybest'] = weighted_prediction
+
+            model.rocs = rocs
+            _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=dtw, max_dist=100)
+            df['weighted_ensemble_dtw_onlybest'] = weighted_prediction
+
+            model.rocs = rocs
+            _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=smape, max_dist=0.999)
+            df['weighted_ensemble_smape_onlybest'] = weighted_prediction
 
             ### Clustering from 2022 paper
-            X_val, X_test = torch.from_numpy(X_val).float(), torch.from_numpy(X_test).float()
+            # X_val, X_test = torch.from_numpy(X_val).float(), torch.from_numpy(X_test).float()
 
-            print([len(r) for r in rocs])
+            # print([len(r) for r in rocs])
 
-            model.rocs = rocs
-            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng, dist_fn=euclidean)
-            df['e2e_clustering_average'] = clustering_prediction
+            # model.rocs = rocs
+            # clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng, dist_fn=euclidean)
+            # df['e2e_clustering_average'] = clustering_prediction
 
-            print('---')
-            print([len(r) for r in rocs])
+            # print('---')
+            # print([len(r) for r in rocs])
 
-            model.rocs = rocs
-            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng, dist_fn=euclidean)
-            df['e2e_clustering_weighted'] = clustering_prediction
+            # model.rocs = rocs
+            # clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng, dist_fn=euclidean)
+            # df['e2e_clustering_weighted'] = clustering_prediction
 
-            print('---')
-            model.rocs = rocs
-            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng, dist_fn=dtw)
-            df['e2e_clustering_average_dtw'] = clustering_prediction
+            # print('---')
+            # model.rocs = rocs
+            # clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng, dist_fn=dtw)
+            # df['e2e_clustering_average_dtw'] = clustering_prediction
 
-            print('---')
-            print([len(r) for r in rocs])
+            # print('---')
+            # print([len(r) for r in rocs])
 
-            model.rocs = rocs
-            clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng, dist_fn=dtw)
-            df['e2e_clustering_weighted_dtw'] = clustering_prediction
+            # model.rocs = rocs
+            # clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng, dist_fn=dtw)
+            # df['e2e_clustering_weighted_dtw'] = clustering_prediction
 
 
         if override or 'deepar' not in df.columns:

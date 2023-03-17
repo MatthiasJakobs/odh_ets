@@ -6,7 +6,8 @@ from datasets.monash_forecasting import _get_ds_names as get_monash_names
 from datasets.legacy_datasets import load_dataset as load_legacy
 from datasets.legacy_datasets import all_legacy_names as get_legacy_names
 
-limit_data = 15
+#limit_data = 15
+limit_data = None
 
 def get_monash_configs():
     idx_mapping = {

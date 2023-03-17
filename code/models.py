@@ -10,6 +10,7 @@ from tsx.metrics import mse
 from tsx.distances import dtw, euclidean
 from scipy.special import softmax
 from tsx.utils import to_random_state
+from seedpy import fixedseed
 
 from roc_tools import find_closest_rocs, cluster_rocs, select_topm, drift_detected, get_topm
 from utils import smape
@@ -74,6 +75,43 @@ class EncoderDecoder(nn.Module):
     def transform(self, x):
         return self.encoder(x).cpu().numpy()
 
+class PolynomialRegression(nn.Module):
+
+    def __init__(self, input_size, degree, mask=None):
+        super().__init__()
+        self.input_size = input_size
+        self.degree = degree
+
+        if mask is not None:
+            self.mask = torch.Tensor(mask)
+        else:
+            self.mask = torch.ones(input_size)
+
+        # How many values per datapoint
+        self.linear = nn.Linear(degree * input_size, 1)
+
+    def forward(self, X):
+        self.mask = self.mask.to(X.device)
+        return self.linear(self.polynomial_features(self.mask[None, :] * X))
+
+    def polynomial_features(self, X):
+        return torch.hstack([X ** i for i in range(1, self.degree + 1)])
+
+class MaskedLinear(nn.Linear):
+
+    def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None, mask=None) -> None:
+        super().__init__(in_features, out_features, bias, device, dtype)
+        if mask is not None:
+            self.mask = torch.Tensor(mask)
+        else:
+            self.mask = torch.ones(in_features)
+
+    def forward(self, X):
+        self.mask = self.mask.to(X.device)
+        X = self.mask[None, :] * X
+        return super().forward(X)
+
+
 class MultiForecaster(nn.Module):
 
     def __init__(self, hyperparameters, encoder_decoder, n_encoder_filters, n_encoder_lag):
@@ -133,6 +171,34 @@ class MultiForecaster(nn.Module):
             nn.Linear(n_encoder_filters * n_encoder_lag, 1),
         )
         self.forecasters.append(m)
+
+        with fixedseed(np, seed=7273491):
+            masks = np.random.binomial(1, 0.5, size=(5, n_encoder_filters * n_encoder_lag)).tolist()
+        for i in range(5):
+            self.forecasters.append(
+                nn.Sequential(
+                    nn.Flatten(),
+                    MaskedLinear(n_encoder_filters * n_encoder_lag, 1, mask=masks[i])
+                )
+            )
+
+        # Polynomial Regression 
+        with fixedseed(np, seed=81745612):
+            masks = np.random.binomial(1, 0.5, size=(5, n_encoder_filters * n_encoder_lag)).tolist()
+        self.forecasters.append(
+            nn.Sequential(
+                nn.Flatten(),
+                PolynomialRegression(n_encoder_filters * n_encoder_lag, degree=3, mask=None),
+            )
+        )
+
+        for i in range(4):
+            self.forecasters.append(
+                nn.Sequential(
+                    nn.Flatten(),
+                    PolynomialRegression(n_encoder_filters * n_encoder_lag, degree=3, mask=masks[i]),
+                )
+            )
 
     def forward(self, x, use_decoder=True, train_encoder=True, return_feats=False):
         if train_encoder:
@@ -290,7 +356,7 @@ class MultiForecaster(nn.Module):
 
         return new_rocs
 
-    def build_rocs(self, X_val):
+    def build_rocs(self, X_val, only_best=False):
 
         # For a 2d array, split every row at zeros and add them to a list if their size is longer than 2
         def split_array_at_zeros(X, activations):
@@ -320,18 +386,35 @@ class MultiForecaster(nn.Module):
 
         x = x.unsqueeze(1)
         all_cams = [ [] for _ in range(n_forecasters)]
+        losses = np.zeros((n_forecasters, len(x)))
 
         feats = self.encoder_decoder.encode(x)
         for f_idx, fc in enumerate(self.forecasters):
             pred = fc(feats)
             l = (pred - y)**2
             cam = self._gradcam(feats, l)
+            losses[f_idx] = l.detach().numpy().squeeze()
 
-            all_cams[f_idx].extend(split_array_at_zeros(x, cam))
+            split_rocs = split_array_at_zeros(x, cam)
+            all_cams[f_idx].extend(split_rocs)
 
         # Compact rocs
         final_rocs = [ [] for _ in range(n_forecasters)]
-        for f_idx, forecaster_rocs in enumerate(all_cams):
+        rocs = [[] for _ in range(n_forecasters)]
+        if only_best:
+            # Find best forecaster for each datapoint
+            losses = losses.T
+            best_forecasters = []
+            for datapoint_idx in range(len(x)):
+                best_forecaster_idx = np.argmin(losses[datapoint_idx])
+                best_forecasters.append(best_forecaster_idx)
+                rocs[best_forecaster_idx].append(all_cams[best_forecaster_idx][datapoint_idx])
+
+        else:
+            # Take all
+            rocs = all_cams
+
+        for f_idx, forecaster_rocs in enumerate(rocs):
             for datapoint_rocs in forecaster_rocs:
                 final_rocs[f_idx].extend(datapoint_rocs)
 
@@ -383,8 +466,12 @@ class MultiForecaster(nn.Module):
             with torch.no_grad():
                 feats = self.encoder_decoder.encode(x.unsqueeze(0).unsqueeze(0))
 
-                tmp =[(1-w[f_idx]) * self.forecasters[f_idx](feats) for f_idx in range(len(self.forecasters))] 
-                pred = sum(tmp) / (1-w).sum()
+                if dist_fn == smape:
+                    tmp =[(1-w[f_idx]) * self.forecasters[f_idx](feats) for f_idx in range(len(self.forecasters))] 
+                    pred = sum(tmp) / (1-w).sum()
+                else:
+                    w = softmax(-w)
+                    pred = sum([w[idx] * self.forecasters[idx](feats) for idx in range(len(self.forecasters))])
 
                 prediction.append(pred.item())
 
