@@ -12,6 +12,7 @@ from sklearn.metrics import mean_squared_error as mse
 from os.path import exists
 from scipy.stats import entropy
 from tsx.distances import euclidean, dtw
+from copy import deepcopy
 
 from models import EncoderDecoder, MultiForecaster
 from deepar import DeepARWrapper
@@ -74,7 +75,7 @@ def main(override, dry_run):
         df = pd.read_csv(result_path, header=0, index_col=0)
 
         # Skip if experiment is already done
-        if override or ('e2e_ensemble' not in df.columns) or ('e2e_roc_selection' not in df.columns) or ('e2e_weighted_ensemble' not in df.columns):
+        if override or ('best_possible_selection' not in df.columns) or ('weighted_ensemble_euclidean' not in df.columns) or ('weighted_ensemble_driftaware_euclidean' not in df.columns) or ('weighted_ensemble_drift_periodic_euclidean' not in df.columns):
             savepath = f'models/{ds_name}_#{ds_index}_e2e.pth'
 
             hyp = hyperparameters['e2e_no_decoder']
@@ -92,95 +93,67 @@ def main(override, dry_run):
             model.eval()
 
             model.to('cpu')
-            # all_preds = model.predict(X, return_mean=False)
-            # ensemble_preds = all_preds.mean(axis=-1)
-
-            ### Run roc selection method
             rocs = model.build_rocs(X_val, only_best=False)
             roc_distribution = np.array([len(roc) for roc in rocs])
             print('roc_dist', roc_distribution)
-            # model.rocs = rocs
-            # roc_preds = model.run(X_test)
 
-            # df['e2e_ensemble'] = ensemble_preds
-            # df['e2e_roc_selection'] = roc_preds
-            
-            ### Compute weighting based on distance
-            # model.rocs = model.restrict_rocs(model.rocs, exact_length=5)
-            # _, weighted_prediction1 = model.predict_weighted(X_test, k=1, dist_fn=smape)
-            # df['e2e_weighted_ensemble_smape_k=1'] = weighted_prediction1
-            # w, weighted_prediction2 = model.predict_weighted(X_test, k=3, dist_fn=smape)
-            # df['e2e_weighted_ensemble_smape_k=3'] = weighted_prediction2
-            # w, weighted_prediction3 = model.predict_weighted(X_test, k=5, dist_fn=smape)
-            # df['e2e_weighted_ensemble_smape_k=5'] = weighted_prediction3
-            # w, weighted_prediction4 = model.predict_weighted(X_test, k=7, dist_fn=smape)
-            # df['e2e_weighted_ensemble_smape_k=7'] = weighted_prediction4
-
-            ### Save the individual predictions as well
-            # single_names = ['e2e-fcn1', 'e2e-fcn2', 'e2e-conv1', 'e2e-conv2', 'e2e-sdt1', 'e2e-sdt2', 'e2e-lin']
-            # for single_name, single_pred in zip(single_names, all_preds.T):
-            #     df[single_name] = single_pred
+            ### Run ensemble preds
+            all_preds = model.predict(X, return_mean=False)
+            ensemble_preds = all_preds.mean(axis=-1)
+            df['e2e_ensemble'] = ensemble_preds
 
             ### Get a baseline with the best prediction possible
+            print('Starting best_possible_selection')
             best_possible_predictions = model.get_best_prediction(X, X_test)
             df['best_possible_selection'] = best_possible_predictions
 
-            # Weighted prediction
-            model.rocs = model.restrict_rocs(rocs, 5)
+            ### Weighted prediction
+            print('Starting weighted_ensemble')
+            model.rocs = model.restrict_rocs(deepcopy(rocs), 5)
             _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=euclidean, max_dist=100)
             df['weighted_ensemble_euclidean'] = weighted_prediction
 
-            model.rocs = rocs
+            model.rocs = deepcopy(rocs)
             _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=dtw, max_dist=100)
             df['weighted_ensemble_dtw'] = weighted_prediction
 
-            model.rocs = rocs
+            model.rocs = deepcopy(rocs)
             _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=smape, max_dist=0.999)
             df['weighted_ensemble_smape'] = weighted_prediction
 
-            # Weighted prediction, only_best
-            rocs = model.build_rocs(X_val, only_best=True)
-            roc_distribution = np.array([len(roc) for roc in rocs])
-            print('roc_dist_onlybest', roc_distribution)
-            model.rocs = model.restrict_rocs(rocs, 5)
-            _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=euclidean, max_dist=100)
-            df['weighted_ensemble_euclidean_onlybest'] = weighted_prediction
+            ### Weighted prediction with known drifts
+            print('Starting weighted_ensemble_driftaware')
+            drift_file = f'results/drifts/{ds_name}_{ds_index}_OEP-ROC-15_type1.npy'
+            drifts = np.load(drift_file)
 
-            model.rocs = rocs
-            _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=dtw, max_dist=100)
-            df['weighted_ensemble_dtw_onlybest'] = weighted_prediction
+            model.rocs = deepcopy(rocs)
+            _, weighted_prediction = model.predict_weighted_drifts(X_val, X_test, drifts, k=1, dist_fn=smape, max_dist=0.999)
+            df['weighted_ensemble_driftaware_smape'] = weighted_prediction
 
-            model.rocs = rocs
-            _, weighted_prediction = model.predict_weighted(X_test, k=1, dist_fn=smape, max_dist=0.999)
-            df['weighted_ensemble_smape_onlybest'] = weighted_prediction
+            model.rocs = deepcopy(rocs)
+            _, weighted_prediction = model.predict_weighted_drifts(X_val, X_test, drifts, k=1, dist_fn=dtw, max_dist=100)
+            df['weighted_ensemble_driftaware_dtw'] = weighted_prediction
 
-            ### Clustering from 2022 paper
-            # X_val, X_test = torch.from_numpy(X_val).float(), torch.from_numpy(X_test).float()
+            model.rocs = model.restrict_rocs(deepcopy(rocs), 5)
+            _, weighted_prediction = model.predict_weighted_drifts(X_val, X_test, drifts, k=1, dist_fn=euclidean, max_dist=100)
+            df['weighted_ensemble_driftaware_euclidean'] = weighted_prediction
 
-            # print([len(r) for r in rocs])
+            ### Weighted prediction with periodic drifts
+            print('Starting weighted_ensemble_drift_periodic')
+            periodicity = len(X_val) // 10
+            drifts = np.linspace(0, len(X_val), periodicity, dtype=np.int32)
 
-            # model.rocs = rocs
-            # clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng, dist_fn=euclidean)
-            # df['e2e_clustering_average'] = clustering_prediction
+            model.rocs = deepcopy(rocs)
+            _, weighted_prediction = model.predict_weighted_drifts(X_val, X_test, drifts, k=1, dist_fn=smape, max_dist=0.999)
+            df['weighted_ensemble_drift_periodic_smape'] = weighted_prediction
 
-            # print('---')
-            # print([len(r) for r in rocs])
+            model.rocs = deepcopy(rocs)
+            _, weighted_prediction = model.predict_weighted_drifts(X_val, X_test, drifts, k=1, dist_fn=dtw, max_dist=100)
+            df['weighted_ensemble_drift_periodic_dtw'] = weighted_prediction
 
-            # model.rocs = rocs
-            # clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng, dist_fn=euclidean)
-            # df['e2e_clustering_weighted'] = clustering_prediction
-
-            # print('---')
-            # model.rocs = rocs
-            # clustering_prediction = model.predict_clustered(X_val, X_test, weighting=False, random_state=rng, dist_fn=dtw)
-            # df['e2e_clustering_average_dtw'] = clustering_prediction
-
-            # print('---')
-            # print([len(r) for r in rocs])
-
-            # model.rocs = rocs
-            # clustering_prediction = model.predict_clustered(X_val, X_test, weighting=True, random_state=rng, dist_fn=dtw)
-            # df['e2e_clustering_weighted_dtw'] = clustering_prediction
+            model.rocs = model.restrict_rocs(deepcopy(rocs), 5)
+            _, weighted_prediction = model.predict_weighted_drifts(X_val, X_test, drifts, k=1, dist_fn=euclidean, max_dist=100)
+            df['weighted_ensemble_drift_periodic_euclidean'] = weighted_prediction
 
 
         if override or 'deepar' not in df.columns:

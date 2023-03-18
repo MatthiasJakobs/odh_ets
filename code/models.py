@@ -225,7 +225,11 @@ class MultiForecaster(nn.Module):
     def predict(self, X, return_mean=True):
         test_size = int(0.25 * len(X))
         X_test = X[-test_size:][:-1]
-        x, _ = windowing(X_test, lag=5)
+        return self.predict_single(X_test, return_mean=return_mean)
+
+    @torch.no_grad()
+    def predict_single(self, X, return_mean=True):
+        x, _ = windowing(X, lag=5)
 
         if isinstance(x, np.ndarray):
             x = torch.from_numpy(x).float().unsqueeze(1).to(self.get_device())
@@ -443,6 +447,59 @@ class MultiForecaster(nn.Module):
                 prediction.append(pred)
 
         return np.hstack([X_test[:5], np.stack(prediction)])
+
+    def predict_weighted_drifts(self, X_val, X_test, drifts, max_dist=0.999, k=1, dist_fn=None, lag=5):
+        X, _ = windowing(X_test, lag=lag, use_torch=True)
+        prediction = []
+        weights = np.zeros((X.shape[0], len(self.forecasters)))
+
+        val_start = 0
+        val_stop = len(X_val) + lag
+        X_complete = np.concatenate([X_val, X_test])
+        current_val = X_complete[val_start:val_stop]
+
+        for idx, x in enumerate(X):
+
+            val_start += 1
+            val_stop += 1
+            current_val = X_complete[val_start:val_stop]
+
+            # Recreate rocs if necessary
+            if idx in drifts:
+                val_start = val_stop - len(X_val) - lag
+                current_val = X_complete[val_start:val_stop]
+                new_rocs = self.build_rocs(current_val)
+                for i in range(len(self.forecasters)):
+                    self.rocs[i].extend(new_rocs[i])
+                if dist_fn == euclidean:
+                    self.rocs = self.restrict_rocs(self.rocs, lag)
+
+            # Find closest RoC for each model
+            dist_vec = np.zeros((len(self.forecasters)))
+            for f_idx in range(len(self.forecasters)):
+                distances = [dist_fn(r, x) for r in self.rocs[f_idx] if r.shape[0] != 0]
+                if len(distances) == 0:
+                    dist_vec[f_idx] = max_dist
+                else:
+                    dist_vec[f_idx] = np.sort(distances)[:k].mean()
+
+            # Compute weighting of ensemble
+            w = dist_vec
+            weights[idx] = w.squeeze()
+
+            with torch.no_grad():
+                feats = self.encoder_decoder.encode(x.unsqueeze(0).unsqueeze(0))
+
+                if dist_fn == smape:
+                    tmp =[(1-w[f_idx]) * self.forecasters[f_idx](feats) for f_idx in range(len(self.forecasters))] 
+                    pred = sum(tmp) / (1-w).sum()
+                else:
+                    w = softmax(-w)
+                    pred = sum([w[idx] * self.forecasters[idx](feats) for idx in range(len(self.forecasters))])
+
+                prediction.append(pred.item())
+
+        return weights, np.hstack([X_test[:5], np.array(prediction)])
 
     def predict_weighted(self, X_test, max_dist=0.999, k=1, dist_fn=None):
         X, _ = windowing(X_test, lag=5, use_torch=True)
