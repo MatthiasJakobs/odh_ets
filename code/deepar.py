@@ -62,6 +62,59 @@ class DeepARWrapper:
         from gluonts.model.predictor import Predictor
         self.model = Predictor.deserialize(Path(path))
 
+class GluonTSWrapper:
+
+    def __init__(self, model, n_epochs, lag):
+        self.n_epochs = n_epochs
+        self.lag = lag
+        self.model = model
+        self.is_fitted = False
+
+    # Use X[:-test_size] for training
+    # X: np.ndarray
+    def fit(self, X):
+        df = pd.DataFrame(X, columns=['target'])
+        df.index = pd.to_datetime(df.index, unit='D')
+
+        test_size = int(0.25 * len(X))
+        dataset = PandasDataset(df, target="target")
+
+        splitter = OffsetSplitter(offset=-test_size)
+        training_data, _ = splitter.split(dataset)
+        self.model = self.model(prediction_length=1, freq="D", trainer=Trainer(epochs=self.n_epochs)).train(training_data)
+        self.is_fitted = True
+
+    # Use X[-test_size:] for prediction
+    # X: np.ndarray
+    def predict(self, X):
+        # if not self.is_fitted:
+        #     raise RuntimeError('Model is not fitted')
+        df = pd.DataFrame(X, columns=['target'])
+        df.index = pd.to_datetime(df.index, unit='D')
+
+        test_size = int(0.25 * len(X))-1
+
+        dataset = PandasDataset(df, target="target")
+
+        splitter = OffsetSplitter(offset=-test_size)
+        _, test_gen = splitter.split(dataset)
+
+        test_data = test_gen.generate_instances(prediction_length=1, windows=test_size, distance=1)
+
+        forecasts = list(self.model.predict(test_data.input))
+        predictions = np.array([x.samples.mean() for x in forecasts]).squeeze()
+        # Fair comparison: Set first `lag` values to gt
+        predictions[:self.lag] = X[-test_size:-test_size+self.lag]
+        return predictions
+
+    def save(self, path):
+        makedirs(path, exist_ok=True)
+        self.model.serialize(Path(path))
+
+    def load(self, path):
+        from gluonts.model.predictor import Predictor
+        self.model = Predictor.deserialize(Path(path))
+
 def main():
     # Setup
     rmse = lambda a, b: mse(a, b, squared=False)

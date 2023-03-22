@@ -13,9 +13,10 @@ from os.path import exists
 from scipy.stats import entropy
 from tsx.distances import euclidean, dtw
 from copy import deepcopy
+from gluonts.mx import TransformerEstimator, NBEATSEnsembleEstimator, NBEATSEstimator
 
 from models import EncoderDecoder, MultiForecaster
-from deepar import DeepARWrapper
+from deepar import DeepARWrapper, GluonTSWrapper
 from datasets.dataloading import get_all_datasets, load_dataset
 from utils import smape
 
@@ -31,6 +32,18 @@ hyperparameters = {
         'n_epochs': 50,
         'model_init_seed': 198471,
     },
+    'transformer': {
+        'n_epochs': 40,
+        'model_init_seed': 198471,
+    },
+    'nbeats': {
+        'n_epochs': 40,
+        'model_init_seed': 198471,
+    },
+    # 'nbeats_ensemble': {
+    #     'n_epochs': 4,
+    #     'model_init_seed': 198471,
+    # },
 }
 
 # weights shape: (n, b)
@@ -172,6 +185,52 @@ def main(override, dry_run):
             preds = deepar.predict(X)
 
             df['deepar'] = preds
+
+        if override or 'transformer' not in df.columns:
+            savepath = f'models/{ds_name}_#{ds_index}_transformer'
+            hyp = hyperparameters['transformer']
+            model = GluonTSWrapper(TransformerEstimator, n_epochs=hyp['n_epochs'], lag=lag)
+            if not exists(savepath):
+                with fixedseed(np, seed=hyp['model_init_seed']):
+                    model.fit(X)
+                    print('save transformer')
+                    model.save(savepath)
+            else:
+                model.load(savepath)
+
+            preds = model.predict(X)
+            df['transformer'] = preds
+
+        # if override or 'nbeats_ensemble' not in df.columns:
+        #     savepath = f'models/{ds_name}_#{ds_index}_nbeatsensemble'
+        #     hyp = hyperparameters['nbeats_ensemble']
+        #     model = GluonTSWrapper(NBEATSEnsembleEstimator, n_epochs=hyp['n_epochs'], lag=lag)
+        #     if not exists(savepath):
+        #         with fixedseed(np, seed=hyp['model_init_seed']):
+        #             model.fit(X)
+        #             print('save nbeats')
+        #             model.save(savepath)
+        #             exit()
+        #     else:
+        #         model.load(savepath)
+
+        #     preds = model.predict(X)
+        #     df['nbeats_ensemble'] = preds
+
+        if override or 'nbeats' not in df.columns:
+            savepath = f'models/{ds_name}_#{ds_index}_nbeats'
+            hyp = hyperparameters['nbeats']
+            model = GluonTSWrapper(NBEATSEstimator, n_epochs=hyp['n_epochs'], lag=lag)
+            if not exists(savepath):
+                with fixedseed(np, seed=hyp['model_init_seed']):
+                    model.fit(X)
+                    print('save nbeats')
+                    model.save(savepath)
+            else:
+                model.load(savepath)
+
+            preds = model.predict(X)
+            df['nbeats'] = preds
     
         if not dry_run:
             df.to_csv(result_path)

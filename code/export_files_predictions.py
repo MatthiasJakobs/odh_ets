@@ -103,6 +103,8 @@ def main():
             'weighted_ensemble_drift_periodic_dtw',
             'weighted_ensemble_drift_periodic_smape',
             'deepar',
+            'transformer',
+            'nbeats',
             'OEP-ROC-15',
         ]
 

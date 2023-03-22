@@ -58,6 +58,8 @@ def main():
     makedirs('plots', exist_ok=True)
     compositors_to_check = [
         'deepar',
+        'transformer',
+        'nbeats',
         'e2e_ensemble',
         #'e2e_roc_selection',
         # 'e2e_weighted_ensemble_smape_k=1',
