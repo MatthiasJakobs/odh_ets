@@ -518,7 +518,6 @@ class MultiForecaster(nn.Module):
 
             # Compute weighting of ensemble
             w = dist_vec
-            weights[idx] = w.squeeze()
 
             with torch.no_grad():
                 feats = self.encoder_decoder.encode(x.unsqueeze(0).unsqueeze(0))
@@ -526,10 +525,12 @@ class MultiForecaster(nn.Module):
                 if dist_fn == smape:
                     tmp =[(1-w[f_idx]) * self.forecasters[f_idx](feats) for f_idx in range(len(self.forecasters))] 
                     pred = sum(tmp) / (1-w).sum()
+                    w = (1-w) / (1-w).sum()
                 else:
                     w = softmax(-w)
                     pred = sum([w[idx] * self.forecasters[idx](feats) for idx in range(len(self.forecasters))])
 
+                weights[idx] = w.squeeze()
                 prediction.append(pred.item())
 
         return weights, np.hstack([X_test[:5], np.array(prediction)])
