@@ -10,10 +10,10 @@ import argparse
 from seedpy import fixedseed
 from sklearn.metrics import mean_squared_error as mse
 from os.path import exists
-from scipy.stats import entropy
 from tsx.distances import euclidean, dtw
 from copy import deepcopy
-from gluonts.mx import TransformerEstimator, NBEATSEnsembleEstimator, NBEATSEstimator
+from gluonts.mx import TransformerEstimator, NBEATSEstimator
+from os import makedirs
 
 from models import EncoderDecoder, MultiForecaster
 from deepar import DeepARWrapper, GluonTSWrapper
@@ -40,48 +40,26 @@ hyperparameters = {
         'n_epochs': 40,
         'model_init_seed': 198471,
     },
-    # 'nbeats_ensemble': {
-    #     'n_epochs': 4,
-    #     'model_init_seed': 198471,
-    # },
 }
 
-# weights shape: (n, b)
-# output: R
-def mean_entropy(weights):
-    b = weights.shape[1]
-    entr = entropy(weights, base=b, axis=1)
-    return np.mean(entr)
-
-
 def main(override, dry_run):
-    # TODO: Notes
-    # No thresholding
-    # euclidean
-
     # Global parameters
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     batch_size = 128
     lag = 5
-    rng = np.random.RandomState(192857)
 
     for ds_name, ds_index in get_all_datasets():
         print(ds_name, ds_index)
         X = load_dataset(ds_name, ds_index)
 
-        #train_cutoff = int(len(X) * 0.5)
-        #val_cutoff = train_cutoff + int(len(X) * 0.25)
-        #X_train, X_val, X_test = X[0:train_cutoff], X[train_cutoff:val_cutoff], X[val_cutoff:]
-
         test_size = int(0.25 * len(X))
         train_size = int(0.5 * len(X))
 
-        # TODO: Normalizing? 
-        # mu, std = np.mean(X[:-test_size]), np.std(X[:-test_size])
-        # X = (X - mu) / std
-
         X_test = X[-test_size:][:-1]
         X_val = X[train_size:-test_size]
+
+        makedirs('results', exist_ok=True)
+        makedirs('models', exist_ok=True)
 
         result_path = f'results/test_{ds_name}_#{ds_index}.csv'
         print(result_path)
@@ -200,22 +178,6 @@ def main(override, dry_run):
 
             preds = model.predict(X)
             df['transformer'] = preds
-
-        # if override or 'nbeats_ensemble' not in df.columns:
-        #     savepath = f'models/{ds_name}_#{ds_index}_nbeatsensemble'
-        #     hyp = hyperparameters['nbeats_ensemble']
-        #     model = GluonTSWrapper(NBEATSEnsembleEstimator, n_epochs=hyp['n_epochs'], lag=lag)
-        #     if not exists(savepath):
-        #         with fixedseed(np, seed=hyp['model_init_seed']):
-        #             model.fit(X)
-        #             print('save nbeats')
-        #             model.save(savepath)
-        #             exit()
-        #     else:
-        #         model.load(savepath)
-
-        #     preds = model.predict(X)
-        #     df['nbeats_ensemble'] = preds
 
         if override or 'nbeats' not in df.columns:
             savepath = f'models/{ds_name}_#{ds_index}_nbeats'

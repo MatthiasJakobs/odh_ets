@@ -1,0 +1,9 @@
+pandas
+numpy
+seedpy
+scikit-learn
+gluonts[mxnet,pro]
+git+https://github.com/MatthiasJakobs/tsx@c30d74356d
+git+https://github.com/mirkobunse/critdd
+matplotlib
+tslearn
