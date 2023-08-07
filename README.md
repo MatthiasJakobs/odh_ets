@@ -1,5 +1,5 @@
-# Hybrid Ensembles (ECML-PKDD23 submission)
-Code accompaning our submission for ECML-PKDD23
+# ODH-ETS (ECML-PKDD23)
+Code accompaning the publication **Online Deep Hybrid Ensemble Learning for Time Series Forecasting** for ECML-PKDD23
 
 # Requirements
 First, install [pytorch](https://pytorch.org/get-started/locally/)
